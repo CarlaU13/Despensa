@@ -252,12 +252,12 @@ $('#editor').addEventListener('cancel',event=>{if(busy)event.preventDefault();})
 $('#show-password').addEventListener('click',()=>{const input=$('#login-form').elements.password;input.type=input.type==='password'?'text':'password';$('#show-password').textContent=input.type==='password'?'Mostrar':'Ocultar';});
 $('#login-form').addEventListener('submit',async event=>{
  event.preventDefault();if(busy)return;busy=true;const form=event.target,button=form.querySelector('[type=submit]');button.disabled=true;$('#login-error').hidden=true;
- try{const credentials=Object.fromEntries(new FormData(form));await api('/api/login','POST',credentials);username=credentials.username;form.elements.password.value='';await refresh(true);$('#login').hidden=true;$('#app').hidden=false;}
+ try{const credentials=Object.fromEntries(new FormData(form));await api('/api/login','POST',credentials);username=credentials.username;form.elements.password.value='';await refresh(true);$('#login').hidden=true;$('#app').hidden=false;window.scrollTo(0,0);}
  catch(error){$('#login-error').textContent=error.message;$('#login-error').hidden=false;}
  finally{busy=false;button.disabled=false;}
 });
 async function start(){
- try{const user=await api('/api/session');username=user.username;await refresh(true);$('#login').hidden=true;$('#app').hidden=false;$('#loading').hidden=true;}
+ try{const user=await api('/api/session');username=user.username;await refresh(true);$('#login').hidden=true;$('#app').hidden=false;window.scrollTo(0,0);$('#loading').hidden=true;}
  catch(error){showLogin();if(error.status!==401){$('#login-error').textContent=error.message;$('#login-error').hidden=false;}}
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&username&&!$('#editor').open&&!busy)refresh(true).catch(()=>{});});

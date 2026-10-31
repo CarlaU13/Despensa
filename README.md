@@ -4,8 +4,9 @@ Aplicación privada para una despensa familiar, adaptable a celulares y computad
 
 ## Qué incluye
 
-- Catálogo con nombre, categoría, notas, unidad y mínimo para avisos de stock. Solo el nombre es obligatorio; unidad por defecto: unidad.
+- Catálogo con nombre, categoría libre (con sugerencias de Alimentos, Limpieza, Higiene personal, Mascotas y Otros), notas, unidad y mínimo para avisos de stock. Solo el nombre es obligatorio; unidad por defecto: unidad.
 - Unidades: unidad, paquete, kg, g, l, ml, pote, botella, lata, frasco y porción. No mezcla ni convierte unidades automáticamente.
+- Filtros por categoría en catálogo e inventario; la categoría es independiente del lugar físico.
 - Lugares configurables: alacenas, fruteros, heladeras, freezers, etc.
 - Compras por lotes con cantidad y lugar; fechas de compra, vencimiento, apertura, congelación y próxima revisión; precio, notas y atención manual. Todos los detalles adicionales pueden quedar vacíos.
 - Consumo y movimientos completos o parciales entre lugares.
@@ -95,3 +96,15 @@ Las copias SQL contienen datos privados; guardalas fuera del repositorio. No hay
 - `wrangler.jsonc`: configuración del alojamiento; sin secretos.
 
 `src/domain.mjs` y `public/domain.mjs` contienen las mismas reglas puras. `npm run check` verifica que sigan sincronizadas.
+
+## Capacidad y sincronización
+
+El límite propio de la aplicación es de **50.000 registros activos**, sumando lugares, productos, lotes y artículos de compra. No es una promesa de capacidad ilimitada: siguen aplicando las cuotas y los límites de almacenamiento del alojamiento. No se cambió el plan gratuito.
+
+La API entrega páginas de hasta 500 registros usando cursores; al abrir se obtiene el inventario completo por partes y luego solo los registros modificados o eliminados desde la última sincronización. Las listas muestran 50 resultados por página y cada producto despliega inicialmente hasta 20 lotes. Los totales incluyen todos los registros, no solo la página visible.
+
+La descarga desde la interfaz reúne todas las páginas en el navegador para producir un único JSON completo. La API /api/export también es paginada: sus clientes deben seguir next_cursor con upper_rowid y change_cursor hasta el final.
+
+La migración 0002 mantiene los datos y crea un contador de capacidad actualizado por transacciones, incluyendo recepción de compras, separación de lotes, eliminación y deshacer.
+
+Para artículos de limpieza: creá el producto con categoría **Limpieza** y registrá su compra en el lugar real (por ejemplo, **Alacena del lavadero**). Se pueden crear categorías propias o dejarlas vacías.

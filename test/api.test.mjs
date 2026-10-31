@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import worker,{sha256} from '../src/worker.mjs';
 import {database} from '../scripts/sqlite.mjs';
+import {syncRecords} from '../public/sync.mjs';
 async function fixture(t){
  const DB=database();t.after(()=>DB.close());
  const password=randomBytes(32).toString('base64url');
@@ -121,7 +122,7 @@ test('la exportación autenticada es portable y nunca contiene secretos ni sesio
  const f=await fixture(t);await f.login();await f.create('product',{name:"Sal '); DROP TABLE records; --"});
  const result=await f.call('/api/export');assert.equal(result.status,200);assert.equal(result.data.format,'despensa-v1');assert.equal(result.data.records.length,1);
  assert.equal(JSON.stringify(result.data).includes(f.password),false);assert.equal('sessions' in result.data,false);
- assert.match(result.headers.get('content-disposition'),/attachment/);
+ assert.equal(result.data.next_cursor,null);
 });
 
 test('deshacer cambios sucesivos permite volver hasta el estado inicial',async t=>{
@@ -134,4 +135,82 @@ test('deshacer cambios sucesivos permite volver hasta el estado inicial',async t
  const previous=s.history.find(h=>h.action==='edit'&&!h.undone);
  assert.equal((await f.call('/api/undo/'+previous.id,'POST',{})).status,200);
  s=await f.state();assert.equal(s.records.find(r=>r.id===p.id).name,'Sal');
+});
+
+function seedProducts(db,total,prefix='bulk') {
+ const stmt=db._raw.prepare("INSERT INTO records(id,kind,data,version,deleted) VALUES(?,'product',?,1,0)");
+ db._raw.exec('BEGIN IMMEDIATE');
+ try { for(let i=0;i<total;i++)stmt.run(prefix+'-'+i,JSON.stringify({name:'Artículo '+i,category:i%2?'Limpieza':'Alimentos',unit:'unidad',minimum:null,notes:null})); db._raw.exec('COMMIT'); }
+ catch(error){db._raw.exec('ROLLBACK');throw error;}
+}
+test('la carga de más de 5000 registros se pagina sin omitir ninguno',async t=>{
+ const f=await fixture(t);await f.login();seedProducts(f.env.DB,5100);
+ const first=await f.call('/api/state');
+ assert.equal(first.data.records.length,500);assert.equal(first.data.total_active,5100);assert.equal(first.data.max_active,50000);assert.ok(first.data.next_cursor);
+ const loaded=await syncRecords(async url=>{const r=await f.call(url);assert.equal(r.status,200);return r.data;});
+ assert.equal(loaded.map.size,5100);assert.ok(loaded.map.has('bulk-5099'));
+ const created=await f.call('/api/product','POST',{name:'Por encima del límite anterior',category:'Limpieza'});
+ assert.equal(created.status,200);
+ const resynced=await syncRecords(async url=>(await f.call(url)).data,loaded.map,loaded.cursor);
+ assert.equal(resynced.map.size,5101);
+});
+test('el límite de 50000 es atómico y se libera al eliminar un registro',async t=>{
+ const f=await fixture(t);await f.login();seedProducts(f.env.DB,50000);
+ assert.equal((await f.call('/api/product','POST',{name:'No entra'})).status,409);
+ assert.equal(f.env.DB._raw.prepare('SELECT active_count FROM inventory_meta').get().active_count,50000);
+ assert.equal((await f.call('/api/product/bulk-0','DELETE',{version:1})).status,200);
+ assert.equal(f.env.DB._raw.prepare('SELECT active_count FROM inventory_meta').get().active_count,49999);
+ assert.equal((await f.call('/api/product','POST',{name:'Sí entra'})).status,200);
+ assert.equal(f.env.DB._raw.prepare('SELECT active_count FROM inventory_meta').get().active_count,50000);
+ const event=f.env.DB._raw.prepare("SELECT id FROM history WHERE action='delete'").get();
+ assert.equal((await f.call('/api/undo/'+event.id,'POST',{})).status,409);
+ assert.equal(f.env.DB._raw.prepare('SELECT deleted FROM records WHERE id=?').get('bulk-0').deleted,1);
+});
+test('una recepción al alcanzar capacidad revierte lista, lote e historial',async t=>{
+ const f=await fixture(t);await f.login();
+ const p=await f.create('product',{name:'Detergente',category:'Limpieza'});
+ const shopping=await f.create('shopping',{name:'Detergente',product_id:p.id});
+ seedProducts(f.env.DB,49998);
+ const response=await f.call('/api/receive','POST',{shopping_id:shopping.id,version:shopping.version,lot:{product_id:p.id,quantity:1}});
+ assert.equal(response.status,409);
+ assert.equal(JSON.parse(f.env.DB._raw.prepare('SELECT data FROM records WHERE id=?').get(shopping.id).data).purchased,false);
+ assert.equal(f.env.DB._raw.prepare("SELECT count(*) AS n FROM history WHERE action='receive'").get().n,0);
+ assert.equal(f.env.DB._raw.prepare('SELECT active_count FROM inventory_meta').get().active_count,50000);
+});
+test('la sincronización incremental comunica ediciones y eliminaciones sin recargar el inventario',async t=>{
+ const f=await fixture(t);await f.login();
+ const p=await f.create('product',{name:'Lavandina',category:'Limpieza'});
+ const api=async url=>(await f.call(url)).data;
+ const original=await syncRecords(api);
+ await f.call('/api/product/'+p.id,'PUT',{version:p.version,data:{...p,name:'Lavandina concentrada'}});
+ const delta=await f.call('/api/state?since='+original.cursor);
+ assert.equal(delta.data.records.length,1);assert.equal(delta.data.records[0].name,'Lavandina concentrada');
+ const updated=await syncRecords(api,original.map,original.cursor);
+ assert.equal(updated.map.get(p.id).name,'Lavandina concentrada');
+ await f.call('/api/product/'+p.id,'DELETE',{version:2});
+ const removed=await syncRecords(api,updated.map,updated.cursor);assert.equal(removed.map.size,0);
+ const unchanged=await f.call('/api/state?since='+removed.cursor);
+ assert.equal(unchanged.data.records.length,0);assert.equal('history' in unchanged.data,false);
+});
+test('la exportación paginada incluye todos los registros después de la primera página',async t=>{
+ const f=await fixture(t);await f.login();seedProducts(f.env.DB,1100);
+ let cursor=0,upper,until;const ids=new Set();
+ do {
+ const params=new URLSearchParams({after:String(cursor)});
+ if(upper!==undefined)params.set('upper',String(upper));
+ if(until!==undefined)params.set('until',String(until));
+ const response=await f.call('/api/export?'+params);assert.equal(response.status,200);
+ const data=response.data;assert.equal(data.format,'despensa-v1');
+ upper=data.upper_rowid;until=data.change_cursor;for(const r of data.records)ids.add(r.id);cursor=data.next_cursor;
+ }while(cursor!==null);
+ assert.equal(ids.size,1100);
+});
+test('rechaza cursores y tamaños de página inválidos',async t=>{
+ const f=await fixture(t);await f.login();
+ for(const query of ['after=-1','since=abc','limit=0','limit=501','after=1.5','upper=NaN'])assert.equal((await f.call('/api/state?'+query)).status,400);
+});
+test('conserva las categorías libres de limpieza y las fechas opcionales',async t=>{
+ const f=await fixture(t);await f.login();const p=await f.create('product',{name:'Limpiador',category:'Limpieza'});
+ const lot=await f.create('lot',{product_id:p.id});
+ assert.equal(p.category,'Limpieza');assert.equal(lot.expiry_date,null);
 });

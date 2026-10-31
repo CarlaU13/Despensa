@@ -9,3 +9,7 @@
 .avatar-button{border:0}
 
 .empty-icon svg{width:28px;height:28px}@media(max-width:620px){.toolbar select{flex-basis:100%}input,select,textarea{font-size:16px}.toolbar select{font-size:14px}}
+
+.pagination{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:16px 0 24px;color:#6c785e;font-size:12px}
+#category-filter{max-width:230px}
+@media(max-width:620px){.pagination{flex-wrap:wrap}.pagination>.actions{margin-left:auto}#category-filter{max-width:none;width:100%}}

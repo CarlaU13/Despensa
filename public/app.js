@@ -1,4 +1,5 @@
-import { UNITS, lotAlerts, stocks, localToday } from './domain.mjs';
+import { UNITS, lotAlerts, stocks, localToday, CATEGORY_SUGGESTIONS } from './domain.mjs';
+import { syncRecords, groupRecords } from './sync.mjs';
 const $ = selector => document.querySelector(selector);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const num = value => new Intl.NumberFormat('es-AR',{maximumFractionDigits:3}).format(value ?? 0);
@@ -22,56 +23,96 @@ const sections = {
  locations:['Lugares','Un lugar para cada cosa','Organizá la casa como te resulte más cómodo.'],
  history:['Historial','Los cambios de la casa','Consultá la actividad reciente y deshacé errores sin perder otros cambios.']
 };
-let state={records:[],history:[]}, current='home', search='', location='', onlyAlerts=false, showEmpty=false, username='', busy=false;
-let dialogState=null, toastTimer=null, requestSequence=0;
-const records = kind => state.records.filter(r=>r.kind===kind);
-const find = id => state.records.find(r=>r.id===id);
-const products = () => stocks(records('product'),records('lot'));
+let state={records:[],history:[]}, current='home', search='', location='', categoryFilter='', onlyAlerts=false, showEmpty=false, username='', busy=false;
+let dialogState=null, toastTimer=null, requestSequence=0, renderedToday=localToday();
+let recordMap=new Map(),syncCursor=null,refreshPromise=null;
+let indexes=groupRecords([]),stockCache=[],catalogCache=[];
+const pagePositions=new Map(),lotLimits=new Map();
+const records = kind => indexes.byKind.get(kind)||[];
+const find = id => indexes.byId.get(id);
+const products = () => stockCache;
+function reindex(){
+ indexes=groupRecords(state.records);
+ stockCache=stocks(records('product'),records('lot'));
+ catalogCache=records('product').slice().sort((a,b)=>a.name.localeCompare(b.name,'es'));
+}
+function pageItems(items,key){
+ const page=Math.max(1,Math.min(pagePositions.get(key)||1,Math.ceil(items.length/50)||1));
+ pagePositions.set(key,page);return items.slice((page-1)*50,page*50);
+}
+function pagination(total,key){
+ if(total<=50)return '';
+ const page=pagePositions.get(key)||1,pages=Math.ceil(total/50);
+ return '<div class="pagination"><span>Página '+page+' de '+pages+' · '+num(total)+' resultados</span><div class="actions"><button class="button small-button" data-action="list-page" data-key="'+key+'" data-direction="-1"'+(page===1?' disabled':'')+'>← Anterior</button><button class="button small-button" data-action="list-page" data-key="'+key+'" data-direction="1"'+(page===pages?' disabled':'')+'>Siguiente →</button></div></div>';
+}
+function categoryOptions(){
+ const categories=[...new Set([...CATEGORY_SUGGESTIONS,...records('product').map(p=>p.category).filter(Boolean)])].sort((a,b)=>a.localeCompare(b,'es'));
+ return '<option value="">Todas las categorías</option><option value="__none"'+(categoryFilter==='__none'?' selected':'')+'>Sin categoría</option>'+categories.map(c=>'<option value="'+escape(c)+'"'+(c===categoryFilter?' selected':'')+'>'+escape(c)+'</option>').join('');
+}
+function matchesCategory(product){return !categoryFilter||(categoryFilter==='__none'?!product.category:product.category===categoryFilter);}
 const locationName = id => find(id)?.name || 'Sin lugar asignado';
 const productName = id => find(id)?.name || 'Producto';
 const unitName = product => product?.unit || 'unidad';
 const tag = alert => '<span class="badge '+(['expired','attention'].includes(alert.type)?'red':'amber')+'">'+escape(alert.label)+'</span>';
 function notify(message,error=false){const toast=$('#toast');toast.textContent=message;toast.classList.toggle('error',error);toast.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.hidden=true,5500);}
-function showLogin(){username='';state={records:[],history:[]};$('#app').hidden=true;$('#login').hidden=false;$('#loading').hidden=true;$('#login-form').elements.password.value='';if($('#editor').open)$('#editor').close();}
+function showLogin(){username='';requestSequence++;state={records:[],history:[]};recordMap=new Map();syncCursor=null;reindex();$('#app').hidden=true;$('#login').hidden=false;$('#loading').hidden=true;$('#login-form').elements.password.value='';if($('#editor').open)$('#editor').close();}
 async function api(path,method='GET',body){
  const response=await fetch(path,{method,credentials:'same-origin',headers:method==='GET'?{}:{'Content-Type':'application/json','X-Despensa':'1'},...(body!==undefined?{body:JSON.stringify(body)}:{})});
  const data=await response.json().catch(()=>({error:'La respuesta del servidor no es válida.'}));
  if(!response.ok){if(response.status===401&&path!=='/api/login')showLogin();const error=new Error(data.error||'No pudimos completar la operación.');error.status=response.status;throw error;}return data;
 }
 async function refresh(silent=false){
+ if(refreshPromise)return refreshPromise;
  const sequence=++requestSequence;
- try{const data=await api('/api/state');if(sequence!==requestSequence)return;state=data;$('#sync-status').textContent='Actualizado';render();if(!silent)notify('La despensa está actualizada.');}
- catch(error){$('#sync-status').textContent='Sin actualizar';if(!silent)notify(error.message,true);throw error;}
+ refreshPromise=(async()=>{
+ try{
+ const data=await syncRecords(api,recordMap,syncCursor,(loaded,total)=>{
+   if(sequence!==requestSequence)return;
+   if(syncCursor===null){
+     const message='Cargando tu despensa · '+num(loaded)+' de '+num(total)+' registros';
+     $('#sync-status').textContent=message;$('#loading').textContent=message;
+   }
+ });
+ if(sequence!==requestSequence)return;
+ recordMap=data.map;syncCursor=data.cursor;
+ state={records:[...recordMap.values()],history:data.history||state.history,server_time:data.server_time};
+ reindex();$('#sync-status').textContent='Actualizado';render();if(!silent)notify('La despensa está actualizada.');
+ }catch(error){$('#sync-status').textContent='Sin actualizar';if(!silent)notify(error.message,true);throw error;}
+ })();
+ try{return await refreshPromise;}finally{refreshPromise=null;}
 }
 function navigation(){
  $('#navigation').innerHTML=Object.entries(sections).map(([key,values])=>'<button class="nav-item '+(key===current?'active':'')+'" data-page="'+key+'"'+(key===current?' aria-current="page"':'')+'>'+icon(key)+'<span>'+values[0]+'</span>'+(key==='shopping'&&records('shopping').filter(i=>!i.purchased).length?'<span class="nav-count">'+records('shopping').filter(i=>!i.purchased).length+'</span>':'')+'</button>').join('');
 }
 function render(){
+ renderedToday=localToday();
+ const openProducts=new Set([...document.querySelectorAll('details.product-card[open]')].map(d=>d.dataset.product));
  navigation();
  $('#breadcrumb').textContent='Nuestra casa / '+sections[current][0];
  $('#page-title').textContent=sections[current][1];
  $('#page-description').textContent=sections[current][2];
  $('#page-eyebrow').textContent=current==='home'?'TU CASA, EN ORDEN':'DESPENSA FAMILIAR';
  $('#page').innerHTML=({home:homeView,inventory:inventoryView,shopping:shoppingView,products:productsView,locations:locationsView,history:historyView}[current])();
+ for(const detail of document.querySelectorAll('details.product-card'))if(openProducts.has(detail.dataset.product))detail.open=true;
 }
 function empty(title,message,action='',label=''){
  return '<div class="empty-state"><div class="empty-icon" aria-hidden="true">'+icon('inventory')+'</div><h3>'+escape(title)+'</h3><p>'+escape(message)+'</p>'+(action?'<button class="button secondary" data-action="'+action+'">'+escape(label)+'</button>':'')+'</div>';
 }
 function locationCards(full=false){
- return records('location').map(l=>{
- const lots=records('lot').filter(item=>item.location_id===l.id&&item.quantity>0);
- const total=new Set(lots.map(item=>item.product_id)).size;
- return '<article class="location-card"><div class="food-mark">'+icon('locations')+'</div><h3>'+escape(l.name)+'</h3><p>'+total+' producto'+(total===1?'':'s')+' · '+lots.length+' lote'+(lots.length===1?'':'s')+'</p>'+(full&&l.notes?'<p class="notes">'+escape(l.notes)+'</p>':'')+'<div class="actions"><button class="text-button" data-action="view-location" data-id="'+l.id+'">Ver productos ↗</button>'+(full?'<button class="text-button" data-action="edit" data-id="'+l.id+'">Editar</button>':'')+'</div></article>';
+ return (full?pageItems(records('location'),'locations'):records('location').slice(0,8)).map(l=>{
+ const stat=indexes.locationStats.get(l.id)||{lots:0,products:new Set()};
+ const total=stat.products.size;
+ return '<article class="location-card"><div class="food-mark">'+icon('locations')+'</div><h3>'+escape(l.name)+'</h3><p>'+total+' producto'+(total===1?'':'s')+' · '+stat.lots+' lote'+(stat.lots===1?'':'s')+'</p>'+(full&&l.notes?'<p class="notes">'+escape(l.notes)+'</p>':'')+'<div class="actions"><button class="text-button" data-action="view-location" data-id="'+l.id+'">Ver productos ↗</button>'+(full?'<button class="text-button" data-action="edit" data-id="'+l.id+'">Editar</button>':'')+'</div></article>';
  }).join('');
 }
 function homeView(){
- const ps=products(), lots=records('lot').filter(l=>l.quantity>0), alerts=lots.filter(l=>lotAlerts(l).length), low=ps.filter(p=>p.low), pending=records('shopping').filter(i=>!i.purchased);
+ const ps=products(), lots=records('lot').filter(l=>l.quantity>0), alerts=lots.filter(l=>lotAlerts(l,renderedToday).length), low=ps.filter(p=>p.low), pending=records('shopping').filter(i=>!i.purchased);
  const statsData=[['Productos en casa',ps.filter(p=>p.quantity>0).length,'Artículos con existencias','inventory','inventory'],['Para revisar',alerts.length,'Lotes que necesitan atención','alert','alerts'],['Stock bajo',low.length,'Artículos por reponer','products','low'],['En la lista',pending.length,'Pendientes de compra','shopping','shopping']];
  const recent=alerts.slice().sort((a,b)=>(a.expiry_date||'9999').localeCompare(b.expiry_date||'9999')).slice(0,5);
  return (!ps.length?'<section class="welcome"><div><span class="eyebrow">EMPEZAMOS POR LO SIMPLE</span><h2>Hagamos lugar para tu despensa</h2><p>Creá tus lugares, agregá un producto y registrá lo que ya tenés en casa. No necesitás completar todas las fechas.</p></div><button class="button primary" data-action="new-product">＋ Primer producto</button></section>':'')+
  '<div class="stats">'+statsData.map(([label,count,note,key,destination])=>'<button class="stat '+(key==='alert'?'warn':'')+'" data-action="stat" data-target="'+destination+'"><span class="stat-label">'+label+'</span><span class="stat-icon">'+icon(key)+'</span><strong>'+count+'</strong><small>'+note+'</small></button>').join('')+'</div>'+
  '<div class="dashboard-grid"><section class="panel"><div class="panel-heading"><div><h2>Un poco de atención</h2><p>Para revisar y aprovechar lo que ya tenemos.</p></div><span class="badge amber">'+alerts.length+' lote'+(alerts.length===1?'':'s')+'</span></div><div class="panel-body">'+
- (recent.length?'<div class="attention-list">'+recent.map(l=>'<div class="attention-row"><div class="food-mark">'+icon('inventory')+'</div><div class="row-info"><div class="row-title">'+escape(productName(l.product_id))+'</div><div class="row-meta">'+escape(locationName(l.location_id))+' · '+num(l.quantity)+' '+escape(unitName(find(l.product_id)))+'</div><button class="text-button" data-action="edit" data-id="'+l.id+'">Ver lote ↗</button></div><div class="badges">'+lotAlerts(l).map(tag).join('')+'</div></div>').join('')+'</div><button class="text-button" data-action="stat" data-target="alerts">Ver todos los avisos →</button>':empty('Todo tranquilo por acá','Los lotes marcados, antiguos, por revisar o próximos a vencer aparecerán en este espacio.'))+'</div></section>'+
+ (recent.length?'<div class="attention-list">'+recent.map(l=>'<div class="attention-row"><div class="food-mark">'+icon('inventory')+'</div><div class="row-info"><div class="row-title">'+escape(productName(l.product_id))+'</div><div class="row-meta">'+escape(locationName(l.location_id))+' · '+num(l.quantity)+' '+escape(unitName(find(l.product_id)))+'</div><button class="text-button" data-action="edit" data-id="'+l.id+'">Ver lote ↗</button></div><div class="badges">'+lotAlerts(l,renderedToday).map(tag).join('')+'</div></div>').join('')+'</div><button class="text-button" data-action="stat" data-target="alerts">Ver todos los avisos →</button>':empty('Todo tranquilo por acá','Los lotes marcados, antiguos, por revisar o próximos a vencer aparecerán en este espacio.'))+'</div></section>'+
  '<div><section class="panel"><div class="panel-heading"><h2>La próxima compra</h2><button class="text-button" data-page="shopping">Ver lista ↗</button></div><div class="panel-body">'+
  (pending.length?pending.slice(0,5).map(i=>'<div class="shopping-mini"><button class="check-button" data-action="receive" data-id="'+i.id+'" aria-label="Registrar compra de '+escape(i.name)+'"></button><div class="row-title">'+escape(i.name)+'</div><span class="quantity">'+num(i.quantity)+' '+escape(i.unit)+'</span></div>').join(''):empty('La lista está al día','Agregá lo que falta y todos podrán verlo.'))+
  '<button class="text-button" data-action="new-shopping">＋ Agregar a la lista</button></div></section><aside class="tip-card"><div class="eyebrow">UN HÁBITO QUE SUMA</div><h3>Primero, lo que lleva más tiempo en casa.</h3><p>Registrar la fecha de compra te ayuda a encontrar esos productos que quedaron al fondo.</p></aside></div></div>'+
@@ -80,37 +121,40 @@ function homeView(){
 }
 function normalized(value){return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();}
 function inventoryView(){
- const all=products().filter(p=>normalized(p.name+' '+(p.category||'')).includes(normalized(search)));
- let list=all.map(p=>({...p,lots:records('lot').filter(l=>l.product_id===p.id&&(!location|| (location==='none'?!l.location_id:l.location_id===location))&&(showEmpty||l.quantity>0))})).filter(p=>p.lots.length&&( !onlyAlerts ||p.low||p.lots.some(l=>lotAlerts(l).length)));
+ const all=products().filter(matchesCategory).filter(p=>normalized(p.name+' '+(p.category||'')).includes(normalized(search)));
+ let list=all.map(p=>({...p,lots:(indexes.lotsByProduct.get(p.id)||[]).filter(l=>(!location|| (location==='none'?!l.location_id:l.location_id===location))&&(showEmpty||l.quantity>0))})).filter(p=>p.lots.length&&( !onlyAlerts ||p.low||p.lots.some(l=>lotAlerts(l,renderedToday).length)));
  list.sort((a,b)=>a.name.localeCompare(b.name,'es'));
- return '<div class="toolbar"><label class="search-box"><span aria-hidden="true">⌕</span><input id="inventory-search" aria-label="Buscar productos" placeholder="Buscar en la despensa…" value="'+escape(search)+'"></label><select id="location-filter" aria-label="Filtrar por lugar"><option value="">Todos los lugares</option><option value="none"'+(location==='none'?' selected':'')+'>Sin lugar asignado</option>'+records('location').map(l=>'<option value="'+l.id+'"'+(location===l.id?' selected':'')+'>'+escape(l.name)+'</option>').join('')+'</select><button class="filter-button '+(onlyAlerts?'selected':'')+'" data-action="toggle-alerts" aria-pressed="'+onlyAlerts+'">⚑ Necesitan atención</button><button class="filter-button '+(showEmpty?'selected':'')+'" data-action="toggle-empty" aria-pressed="'+showEmpty+'">Incluir agotados</button></div>'+
+ const shown=pageItems(list,'inventory');
+ return '<div class="toolbar"><label class="search-box"><span aria-hidden="true">⌕</span><input id="inventory-search" aria-label="Buscar productos" placeholder="Buscar en la despensa…" value="'+escape(search)+'"></label><select id="location-filter" aria-label="Filtrar por lugar"><option value="">Todos los lugares</option><option value="none"'+(location==='none'?' selected':'')+'>Sin lugar asignado</option>'+records('location').map(l=>'<option value="'+l.id+'"'+(location===l.id?' selected':'')+'>'+escape(l.name)+'</option>').join('')+'</select><select id="category-filter" aria-label="Filtrar por categoría">'+categoryOptions()+'</select><button class="filter-button '+(onlyAlerts?'selected':'')+'" data-action="toggle-alerts" aria-pressed="'+onlyAlerts+'">⚑ Necesitan atención</button><button class="filter-button '+(showEmpty?'selected':'')+'" data-action="toggle-empty" aria-pressed="'+showEmpty+'">Incluir agotados</button></div>'+
  '<div class="results-meta"><span>'+list.length+' producto'+(list.length===1?'':'s')+(location?' en este lugar':'')+'</span><span>Ordenados por nombre</span></div>'+
- (list.length?'<div class="inventory-list">'+list.map(p=>'<details class="product-card"'+(search||onlyAlerts?' open':'')+'><summary class="product-summary"><div class="food-mark">'+icon('inventory')+'</div><div class="product-info"><div class="product-name">'+escape(p.name)+'</div><div class="row-meta">'+escape(p.category||'Sin categoría')+' · '+p.lots.length+' lote'+(p.lots.length===1?'':'s')+(p.low?' · <span class="badge amber">Stock bajo</span>':'')+'</div></div><div class="stock-total">'+num(p.lots.reduce((s,l)=>s+l.quantity,0))+' <small>'+escape(p.unit)+'</small></div><span class="disclosure" aria-hidden="true">⌄</span></summary><div class="product-lots">'+p.lots.slice().sort((a,b)=>(a.expiry_date||'9999').localeCompare(b.expiry_date||'9999')||(a.purchase_date||'9999').localeCompare(b.purchase_date||'9999')).map(l=>lotRow(l,p)).join('')+'<button class="text-button" data-action="new-lot" data-id="'+p.id+'">＋ Agregar otra compra de este producto</button></div></details>').join('')+'</div>':
- '<section class="panel">'+empty(search||location||onlyAlerts?'No encontramos productos con estos filtros':'Todavía no hay compras registradas',search||location||onlyAlerts?'Probá con otro nombre, lugar o filtro.':'Empezá con algo que ya tengas en casa.','new-lot','＋ Registrar compra')+'</section>');
+ (list.length?'<div class="inventory-list">'+shown.map(p=>'<details data-product="'+p.id+'" class="product-card"'+(search||onlyAlerts?' open':'')+'><summary class="product-summary"><div class="food-mark">'+icon('inventory')+'</div><div class="product-info"><div class="product-name">'+escape(p.name)+'</div><div class="row-meta">'+escape(p.category||'Sin categoría')+' · '+p.lots.length+' lote'+(p.lots.length===1?'':'s')+(p.low?' · <span class="badge amber">Stock bajo</span>':'')+'</div></div><div class="stock-total">'+num(p.lots.reduce((s,l)=>s+l.quantity,0))+' <small>'+escape(p.unit)+'</small></div><span class="disclosure" aria-hidden="true">⌄</span></summary><div class="product-lots">'+p.lots.slice().sort((a,b)=>(a.expiry_date||'9999').localeCompare(b.expiry_date||'9999')||(a.purchase_date||'9999').localeCompare(b.purchase_date||'9999')).slice(0,lotLimits.get(p.id)||20).map(l=>lotRow(l,p)).join('')+(p.lots.length>(lotLimits.get(p.id)||20)?'<button class="text-button" data-action="more-lots" data-id="'+p.id+'">Ver más lotes ('+p.lots.length+' en total)</button>':'')+'<button class="text-button" data-action="new-lot" data-id="'+p.id+'">＋ Agregar otra compra de este producto</button></div></details>').join('')+'</div>'+pagination(list.length,'inventory'):
+ '<section class="panel">'+empty(search||location||onlyAlerts||categoryFilter?'No encontramos productos con estos filtros':'Todavía no hay compras registradas',search||location||onlyAlerts||categoryFilter?'Probá con otro nombre, lugar o filtro.':'Empezá con algo que ya tengas en casa.','new-lot','＋ Registrar compra')+'</section>');
 }
 function lotRow(l,p){
- const alerts=lotAlerts(l);
+ const alerts=lotAlerts(l,renderedToday);
  return '<div class="lot-row '+(l.quantity===0?'zero':'')+'"><div><div class="lot-head">'+escape(locationName(l.location_id))+'</div><p>'+num(l.quantity)+' '+escape(p.unit)+(l.quantity===0?' · Agotado':'')+'</p><p>Compra: '+date(l.purchase_date)+'</p>'+(l.notes?'<div class="notes">'+escape(l.notes)+'</div>':'')+'</div><div>'+
  (l.expiry_date?'<p>Vence: '+date(l.expiry_date)+'</p>':'<p>Sin vencimiento registrado</p>')+(l.opened_date?'<p>Abierto: '+date(l.opened_date)+'</p>':'')+(l.frozen_date?'<p>Congelado: '+date(l.frozen_date)+'</p>':'')+(l.review_date?'<p>Revisar: '+date(l.review_date)+'</p>':'')+(l.price!=null?'<p>Precio de compra: '+money(l.price)+'</p>':'')+'<div class="badges">'+alerts.map(tag).join('')+'</div></div><div class="actions">'+(l.quantity>0?'<button class="button small-button" data-action="consume" data-id="'+l.id+'">Consumir</button><button class="button small-button" data-action="move" data-id="'+l.id+'">Mover</button>':'')+'<button class="button small-button" data-action="edit" data-id="'+l.id+'">Editar</button></div></div>';
 }
 function productsView(){
- const ps=products().sort((a,b)=>a.name.localeCompare(b.name,'es'));
- return '<div class="toolbar"><button class="button secondary" data-action="new-product">＋ Nuevo producto</button><span class="muted field-help">Cada producto tiene una unidad. Sus compras comparten esa unidad.</span></div>'+
- (ps.length?'<div class="table-wrap"><table><thead><tr><th>PRODUCTO</th><th>EN CASA</th><th>MÍNIMO</th><th></th></tr></thead><tbody>'+ps.map(p=>'<tr><td><strong>'+escape(p.name)+'</strong><div class="row-meta">'+escape(p.category||'Sin categoría')+'</div></td><td>'+num(p.quantity)+' '+escape(p.unit)+(p.low?' <span class="badge amber">Reponer</span>':'')+'</td><td>'+(p.minimum==null?'Sin definir':num(p.minimum)+' '+escape(p.unit))+'</td><td><div class="actions"><button class="text-button" data-action="edit" data-id="'+p.id+'">Editar</button><button class="text-button" data-action="add-product-shopping" data-id="'+p.id+'">A la lista</button></div></td></tr>').join('')+'</tbody></table></div>':'<section class="panel">'+empty('El catálogo empieza con un producto','Puede ser un tomate, una especia, leche o lo que guardes en casa.','new-product','＋ Agregar producto')+'</section>');
+ const ps=products().filter(matchesCategory).filter(p=>normalized(p.name+' '+(p.category||'')).includes(normalized(search))).sort((a,b)=>a.name.localeCompare(b.name,'es'));
+ const shown=pageItems(ps,'products');
+ return '<div class="toolbar"><label class="search-box"><span aria-hidden="true">⌕</span><input id="product-search" aria-label="Buscar en el catálogo" placeholder="Buscar en el catálogo…" value="'+escape(search)+'"></label><select id="category-filter" aria-label="Filtrar por categoría">'+categoryOptions()+'</select><button class="button secondary" data-action="new-product">＋ Nuevo producto</button><span class="muted field-help">Cada producto tiene una unidad. Sus compras comparten esa unidad.</span></div>'+
+ (ps.length?'<div class="table-wrap"><table><thead><tr><th>PRODUCTO</th><th>EN CASA</th><th>MÍNIMO</th><th></th></tr></thead><tbody>'+shown.map(p=>'<tr><td><strong>'+escape(p.name)+'</strong><div class="row-meta">'+escape(p.category||'Sin categoría')+'</div></td><td>'+num(p.quantity)+' '+escape(p.unit)+(p.low?' <span class="badge amber">Reponer</span>':'')+'</td><td>'+(p.minimum==null?'Sin definir':num(p.minimum)+' '+escape(p.unit))+'</td><td><div class="actions"><button class="text-button" data-action="edit" data-id="'+p.id+'">Editar</button><button class="text-button" data-action="add-product-shopping" data-id="'+p.id+'">A la lista</button></div></td></tr>').join('')+'</tbody></table></div>'+pagination(ps.length,'products'):'<section class="panel">'+empty(search||categoryFilter?'No encontramos productos con estos filtros':'El catálogo empieza con un producto',search||categoryFilter?'Probá con otra categoría o con otro nombre.':'Puede ser comida, un artículo de limpieza, higiene o cualquier producto de tu casa.','new-product','＋ Agregar producto')+'</section>');
 }
 function shoppingView(){
  const items=records('shopping'), pending=items.filter(i=>!i.purchased), done=items.filter(i=>i.purchased);
- const suggestions=products().filter(p=>p.low&&!pending.some(i=>i.product_id===p.id));
+ const pendingProducts=new Set(pending.map(i=>i.product_id));
+ const suggestions=products().filter(p=>p.low&&!pendingProducts.has(p.id));
  const row=i=>'<div class="shopping-row '+(i.purchased?'done':'')+'"><button class="check-button" data-action="'+(i.purchased?'reopen-shopping':'receive')+'" data-id="'+i.id+'" aria-label="'+(i.purchased?'Volver a pendientes: ':'Registrar compra de ')+escape(i.name)+'">'+(i.purchased?'✓':'')+'</button><div class="row-info"><div class="row-title">'+escape(i.name)+'</div>'+(i.notes?'<div class="row-meta">'+escape(i.notes)+'</div>':'')+'</div><span class="quantity">'+num(i.quantity)+' '+escape(i.unit)+'</span><div class="actions">'+(!i.purchased?'<button class="text-button" data-action="receive" data-id="'+i.id+'">Comprado →</button>':'')+'<button class="text-button" data-action="edit" data-id="'+i.id+'">Editar</button></div></div>';
  return '<div class="toolbar"><button class="button secondary" data-action="new-shopping">＋ Agregar a la lista</button><button class="button" data-action="copy-list">Copiar lista</button></div>'+
- (suggestions.length?'<div class="section-heading"><h2>Quizás haga falta reponer</h2><span class="badge amber">'+suggestions.length+' con poco stock</span></div>'+suggestions.map(p=>'<div class="suggestion"><span class="food-mark">'+icon('products')+'</span><div class="row-info"><div class="row-title">'+escape(p.name)+'</div><div class="row-meta">Quedan '+num(p.quantity)+' '+escape(p.unit)+' · Mínimo: '+num(p.minimum)+'</div></div><button class="button small-button" data-action="add-product-shopping" data-id="'+p.id+'">＋ A la lista</button></div>').join(''):'')+
+ (suggestions.length?'<div class="section-heading"><h2>Quizás haga falta reponer</h2><span class="badge amber">'+suggestions.length+' con poco stock</span></div>'+pageItems(suggestions,'suggestions').map(p=>'<div class="suggestion"><span class="food-mark">'+icon('products')+'</span><div class="row-info"><div class="row-title">'+escape(p.name)+'</div><div class="row-meta">Quedan '+num(p.quantity)+' '+escape(p.unit)+' · Mínimo: '+num(p.minimum)+'</div></div><button class="button small-button" data-action="add-product-shopping" data-id="'+p.id+'">＋ A la lista</button></div>').join('')+pagination(suggestions.length,'suggestions'):'')+
  '<div class="section-heading"><h2>Por comprar</h2><span class="muted field-help">'+pending.length+' pendientes</span></div>'+
- (pending.length?'<div class="shopping-list">'+pending.map(row).join('')+'</div>':'<section class="panel">'+empty('Por ahora, no falta nada','Anotá lo que necesiten. La familia verá la misma lista.','new-shopping','＋ Agregar algo')+'</section>')+
- (done.length?'<div class="section-heading"><h2>Comprado</h2><span class="muted field-help">Ya ingresado al inventario</span></div><div class="shopping-list">'+done.map(row).join('')+'</div>':'');
+ (pending.length?'<div class="shopping-list">'+pageItems(pending,'pending').map(row).join('')+'</div>'+pagination(pending.length,'pending'):'<section class="panel">'+empty('Por ahora, no falta nada','Anotá lo que necesiten. La familia verá la misma lista.','new-shopping','＋ Agregar algo')+'</section>')+
+ (done.length?'<div class="section-heading"><h2>Comprado</h2><span class="muted field-help">Ya ingresado al inventario</span></div><div class="shopping-list">'+pageItems(done,'purchased').map(row).join('')+'</div>'+pagination(done.length,'purchased'):'');
 }
 function locationsView(){
  return '<div class="toolbar"><button class="button secondary" data-action="new-location">＋ Nuevo lugar</button>'+(!records('location').length?'<button class="button" data-action="suggest-locations">Usar lugares sugeridos</button>':'')+'</div>'+
- (records('location').length?'<div class="locations-grid">'+locationCards(true)+'</div>':'<section class="panel">'+empty('La casa se organiza a tu manera','Podés crear alacenas, fruteros, heladeras y freezers con los nombres que uses en casa.','new-location','＋ Crear lugar')+'</section>')+
+ (records('location').length?'<div class="locations-grid">'+locationCards(true)+'</div>'+pagination(records('location').length,'locations'):'<section class="panel">'+empty('La casa se organiza a tu manera','Podés crear alacenas, fruteros, heladeras y freezers con los nombres que uses en casa.','new-location','＋ Crear lugar')+'</section>')+
  '<p class="muted field-help">Los productos pueden repartirse entre distintos lugares. Las compras sin ubicación aparecen como “Sin lugar asignado”.</p>';
 }
 function historyView(){
@@ -131,16 +175,16 @@ function openDialog(mode,item={},extra={}){
  if(busy)return;
  dialogState={mode,item:{...item},...extra};
  const titles={location:'Lugar de guardado',product:'Producto',lot:item.id?'Editar compra / lote':'Registrar una compra',shopping:'En la lista de compras',consume:'Registrar consumo',move:'Mover de lugar',receive:'Comprado, a la despensa',account:'La cuenta familiar'};
- const hints={location:'Poné el nombre que usan en casa.',product:'Solo el nombre es obligatorio. La unidad inicial es unidad.',lot:'Cantidad inicial: 1. Todos los detalles adicionales son opcionales.',shopping:'Podés elegir un producto o escribir algo nuevo.',consume:'Se descontará únicamente de este lote.',move:'Mové todo el lote o solo una parte.',receive:'Confirmá los datos para ingresarlo al inventario.',account:'Un acceso compartido por toda la familia.'};
+ const hints={location:'Poné el nombre que usan en casa.',product:'La categoría describe qué es; el lugar indica dónde lo guardás. Solo el nombre es obligatorio.',lot:'Cantidad inicial: 1. Todos los detalles adicionales son opcionales.',shopping:'Podés elegir un producto o escribir algo nuevo.',consume:'Se descontará únicamente de este lote.',move:'Mové todo el lote o solo una parte.',receive:'Confirmá los datos para ingresarlo al inventario.',account:'Un acceso compartido por toda la familia.'};
  let body='';
  if(mode==='location')body='<div class="form-grid">'+input('name','Nombre',item.name,'text','required maxlength="100" placeholder="Ej.: Heladera 1"')+'<div></div>'+notes(item.notes)+'</div>';
- if(mode==='product')body='<div class="form-grid">'+input('name','Nombre',item.name,'text','required maxlength="140" placeholder="Ej.: Leche"')+input('category','Categoría (opcional)',item.category,'text','maxlength="80" placeholder="Ej.: Lácteos"')+'<label>Unidad<select name="unit">'+unitOptions(item.unit)+'</select><span class="field-help">Cada compra se mide en esta unidad.</span></label>'+input('minimum','Avisar con este stock o menos (opcional)',item.minimum,'number','min="0" max="1000000000" step="0.001"')+notes(item.notes)+'</div>';
+ if(mode==='product')body='<div class="form-grid">'+input('name','Nombre',item.name,'text','required maxlength="140" placeholder="Ej.: Leche"')+input('category','Categoría (opcional)',item.category,'text','maxlength="80" list="category-suggestions" placeholder="Ej.: Limpieza, Alimentos o Lácteos"')+'<datalist id="category-suggestions">'+[...new Set([...CATEGORY_SUGGESTIONS,...records('product').map(p=>p.category).filter(Boolean)])].map(c=>'<option value="'+escape(c)+'"></option>').join('')+'</datalist>'+'<label>Unidad<select name="unit">'+unitOptions(item.unit)+'</select><span class="field-help">Cada compra se mide en esta unidad.</span></label>'+input('minimum','Avisar con este stock o menos (opcional)',item.minimum,'number','min="0" max="1000000000" step="0.001"')+notes(item.notes)+'</div>';
  if(['lot','receive'].includes(mode)){
  const productId=item.product_id||extra.productId||'';
- body='<div class="form-grid"><label class="full">Producto<select name="product_id" required>'+options(records('product'),productId,'Elegí un producto')+'</select><button type="button" class="text-button" data-action="create-product-in-dialog">＋ Crear un producto nuevo</button></label>'+input('quantity','Cantidad',item.quantity??1,'number','min="'+(item.id?0:0.001)+'" max="1000000000" step="0.001" required')+'<label>Lugar (opcional)<select name="location_id">'+options(records('location'),item.location_id,'Sin lugar asignado')+'</select></label></div><p id="lot-unit" class="field-help">Unidad: '+escape(unitName(find(productId)))+'</p><details class="optional-fields"'+(item.id?' open':'')+'><summary>Fechas, precio y otros detalles · Opcionales</summary><div class="form-grid">'+
+ body='<div class="form-grid"><label class="full">Producto<select name="product_id" required>'+options(catalogCache,productId,'Elegí un producto')+'</select><button type="button" class="text-button" data-action="create-product-in-dialog">＋ Crear un producto nuevo</button></label>'+input('quantity','Cantidad',item.quantity??1,'number','min="'+(item.id?0:0.001)+'" max="1000000000" step="0.001" required')+'<label>Lugar (opcional)<select name="location_id">'+options(records('location'),item.location_id,'Sin lugar asignado')+'</select></label></div><p id="lot-unit" class="field-help">Unidad: '+escape(unitName(find(productId)))+'</p><details class="optional-fields"'+(item.id?' open':'')+'><summary>Fechas, precio y otros detalles · Opcionales</summary><div class="form-grid">'+
  input('purchase_date','Fecha de compra',item.purchase_date||'','date')+input('expiry_date','Vencimiento',item.expiry_date||'','date')+input('opened_date','Fecha de apertura',item.opened_date||'','date')+input('frozen_date','Fecha de congelación',item.frozen_date||'','date')+input('review_date','Volver a revisar el',item.review_date||'','date')+input('price','Precio pagado (opcional)',item.price,'number','min="0" max="1000000000" step="0.01"')+notes(item.notes)+'<label class="checkbox-label full"><input type="checkbox" name="attention"'+(item.attention?' checked':'')+'> Marcar para revisar el estado</label></div></details>';
  }
- if(mode==='shopping')body='<div class="form-grid"><label class="full">Producto del catálogo (opcional)<select name="product_id">'+options(records('product'),item.product_id,'Escribir un artículo nuevo')+'</select></label>'+input('name','Qué hace falta',item.name,'text','required maxlength="140" placeholder="Ej.: Tomates"')+input('quantity','Cantidad',item.quantity??1,'number','required min="0.001" max="1000000000" step="0.001"')+'<label>Unidad<select name="unit">'+unitOptions(item.unit)+'</select></label><div></div>'+notes(item.notes)+'</div>';
+ if(mode==='shopping')body='<div class="form-grid"><label class="full">Producto del catálogo (opcional)<select name="product_id">'+options(catalogCache,item.product_id,'Escribir un artículo nuevo')+'</select></label>'+input('name','Qué hace falta',item.name,'text','required maxlength="140" placeholder="Ej.: Tomates"')+input('quantity','Cantidad',item.quantity??1,'number','required min="0.001" max="1000000000" step="0.001"')+'<label>Unidad<select name="unit">'+unitOptions(item.unit)+'</select></label><div></div>'+notes(item.notes)+'</div>';
  if(mode==='consume')body='<div class="dialog-info">'+escape(productName(item.product_id))+' · '+escape(locationName(item.location_id))+'<br>Disponible: '+num(item.quantity)+' '+escape(unitName(find(item.product_id)))+'</div>'+input('amount','Cantidad consumida',Math.min(1,item.quantity),'number','required min="0.001" max="'+item.quantity+'" step="0.001"');
  if(mode==='move')body='<div class="dialog-info">'+escape(productName(item.product_id))+'<br>Desde '+escape(locationName(item.location_id))+' · '+num(item.quantity)+' '+escape(unitName(find(item.product_id)))+'</div><div class="form-grid">'+input('amount','Cantidad a mover',item.quantity,'number','required min="0.001" max="'+item.quantity+'" step="0.001"')+'<label>Nuevo lugar<select name="location_id">'+options(records('location').filter(l=>l.id!==item.location_id),'','Sin lugar asignado')+'</select></label></div>';
  if(mode==='account')body='<div class="dialog-info">Usuario: <strong>'+escape(username)+'</strong><br>Todos ven y modifican la misma despensa. Si necesitás retirar el acceso de un dispositivo, cerrá todas las sesiones.</div><div class="actions"><button class="button" type="button" data-action="export">Descargar mis datos</button><button class="button" type="button" data-action="logout">Salir de este dispositivo</button><button class="button danger" type="button" data-action="logout-all">Cerrar todas las sesiones</button></div>';
@@ -180,12 +224,22 @@ async function saveForm(event){
  }catch(error){if($('#dialog-error')){$('#dialog-error').textContent=error.message;$('#dialog-error').hidden=false;}else notify(error.message,true);if(error.status===409)refresh(true).catch(()=>{});}
  finally{busy=false;buttons.forEach(b=>b.disabled=false);}
 }
+async function downloadExport(){
+ const exportState=await syncRecords(api,new Map(),null);
+ const data={format:'despensa-v1',exported_at:new Date().toISOString(),records:[...exportState.map.values()].map(({deleted,...record})=>record)};
+ const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+ const link=document.createElement('a');link.href=url;link.download='despensa-'+localToday()+'.json';document.body.append(link);link.click();link.remove();
+ setTimeout(()=>URL.revokeObjectURL(url),1000);
+ notify('Datos descargados.');
+}
 async function perform(action,id,button){
  if(busy&&!['close-dialog'].includes(action))return;
  const item=id?find(id):null;
+ if(action==='list-page'){pagePositions.set(button.dataset.key,(pagePositions.get(button.dataset.key)||1)+Number(button.dataset.direction));render();$('#main').focus();return;}
+ if(action==='more-lots'){lotLimits.set(id,(lotLimits.get(id)||20)+20);render();return;}
  if(action==='close-dialog'){if(!busy)$('#editor').close();return;}
  if(action==='new-location'){openDialog('location');return;}
- if(action==='new-product'){openDialog('product');return;}
+ if(action==='new-product'){openDialog('product',{category:categoryFilter&&categoryFilter!=='__none'?categoryFilter:null});return;}
  if(action==='new-lot'){if(!records('product').length)openDialog('product',{}, {returnTo:{mode:'lot',item:{},extra:{}}});else openDialog('lot',{}, {productId:id});return;}
  if(action==='new-shopping'){openDialog('shopping');return;}
  if(action==='edit'&&item){openDialog(item.kind,item);return;}
@@ -202,15 +256,15 @@ async function perform(action,id,button){
  const draft=formData($('#editor-form'));
  openDialog('product',{}, {returnTo:{mode:context.mode,item:draft,extra:{shopping:context.shopping,productId:context.productId}}});return;
  }
- if(action==='toggle-alerts'){onlyAlerts=!onlyAlerts;render();return;}
- if(action==='toggle-empty'){showEmpty=!showEmpty;render();return;}
+ if(action==='toggle-alerts'){onlyAlerts=!onlyAlerts;pagePositions.set('inventory',1);render();return;}
+ if(action==='toggle-empty'){showEmpty=!showEmpty;pagePositions.set('inventory',1);render();return;}
  if(action==='stat'){
  const target=button.dataset.target;
  current=['alerts','low'].includes(target)?'inventory':target;
- onlyAlerts=['alerts','low'].includes(target);search='';location='';render();return;
+ onlyAlerts=['alerts','low'].includes(target);search='';location='';categoryFilter='';pagePositions.set('inventory',1);render();return;
  }
- if(action==='view-location'){current='inventory';location=id;search='';onlyAlerts=false;render();return;}
- if(action==='export'){window.location.assign('/api/export');return;}
+ if(action==='view-location'){current='inventory';location=id;search='';categoryFilter='';onlyAlerts=false;pagePositions.set('inventory',1);render();return;}
+ if(action==='export'){busy=true;if(button)button.disabled=true;try{await downloadExport();}finally{busy=false;if(button)button.disabled=false;}return;}
  if(action==='copy-list'){
  const text=records('shopping').filter(i=>!i.purchased).map(i=>'☐ '+i.name+' · '+num(i.quantity)+' '+i.unit+(i.notes?' ('+i.notes+')':'')).join('\n');
  if(!text){notify('La lista está vacía.');return;}
@@ -238,16 +292,22 @@ async function perform(action,id,button){
 }
 document.addEventListener('click',event=>{
  const pageButton=event.target.closest('[data-page]');
- if(pageButton){if(busy)return;current=pageButton.dataset.page;search='';location='';onlyAlerts=false;render();$('#main').focus();return;}
+ if(pageButton){if(busy)return;current=pageButton.dataset.page;search='';location='';categoryFilter='';onlyAlerts=false;pagePositions.clear();render();$('#main').focus();return;}
  const button=event.target.closest('[data-action]');
  if(button)perform(button.dataset.action,button.dataset.id,button).catch(error=>notify(error.message,true));
 });
 document.addEventListener('input',event=>{
- if(event.target.id==='inventory-search'){
- search=event.target.value;const pos=event.target.selectionStart;$('#page').innerHTML=inventoryView();$('#inventory-search').focus();$('#inventory-search').setSelectionRange(pos,pos);
+ if(['inventory-search','product-search'].includes(event.target.id)){
+ const id=event.target.id;search=event.target.value;const pos=event.target.selectionStart;
+ pagePositions.set(current==='products'?'products':'inventory',1);
+ $('#page').innerHTML=current==='products'?productsView():inventoryView();
+ const input=document.getElementById(id);input.focus();input.setSelectionRange(pos,pos);
  }
 });
-document.addEventListener('change',event=>{if(event.target.id==='location-filter'){location=event.target.value;render();}});
+document.addEventListener('change',event=>{
+ if(event.target.id==='location-filter'){location=event.target.value;pagePositions.set('inventory',1);render();}
+ if(event.target.id==='category-filter'){categoryFilter=event.target.value;pagePositions.set('inventory',1);pagePositions.set('products',1);render();}
+});
 $('#editor').addEventListener('cancel',event=>{if(busy)event.preventDefault();});
 $('#show-password').addEventListener('click',()=>{const input=$('#login-form').elements.password;input.type=input.type==='password'?'text':'password';$('#show-password').textContent=input.type==='password'?'Mostrar':'Ocultar';});
 $('#login-form').addEventListener('submit',async event=>{

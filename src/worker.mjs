@@ -1,4 +1,4 @@
-import { AppError, identifier, validate } from './domain.mjs';
+import { AppError, identifier, validate, MAX_ACTIVE_RECORDS } from './domain.mjs';
 
 const enc = new TextEncoder();
 const SESSION_SECONDS = 14 * 24 * 3600;
@@ -82,12 +82,37 @@ async function login(request, env) {
   return json({ok:true},200,{'Set-Cookie':cookie(request,env,raw)});
 }
 function unpack(row) { return {id:row.id,kind:row.kind,version:row.version,...JSON.parse(row.data)}; }
-async function snapshot(env) {
-  const [records,history]=await env.DB.batch([
-    env.DB.prepare('SELECT * FROM records WHERE deleted=0 ORDER BY rowid LIMIT 5001'),
-    env.DB.prepare('SELECT id,record_id,kind,action,label,created_at,undone,group_id FROM history ORDER BY rowid DESC LIMIT 100')
-  ]);
-  return { records:records.results.map(unpack), history:history.results, server_time:new Date().toISOString() };
+function pageNumber(params, name, fallback=0) {
+  const raw=params.get(name);
+  if(raw===null) return fallback;
+  if(!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new AppError(400,'Cursor de página inválido.');
+  return Number(raw);
+}
+async function snapshot(env, params=new URLSearchParams()) {
+  const limit=pageNumber(params,'limit',500);
+  if(limit<1||limit>500) throw new AppError(400,'La página debe tener entre 1 y 500 registros.');
+  const meta=await env.DB.prepare('SELECT active_count,COALESCE((SELECT MAX(rowid) FROM records),0) AS upper_rowid,COALESCE((SELECT MAX(rowid) FROM history),0) AS watermark FROM inventory_meta WHERE id=1').first();
+  const changes=params.has('since');
+  const after=pageNumber(params,changes?'since':'after');
+  const upper=pageNumber(params,'upper',meta.upper_rowid);
+  const until=pageNumber(params,'until',meta.watermark);
+  if(until>meta.watermark || (changes&&after>meta.watermark)) return {reset:true,records:[],history:[],next_cursor:null};
+  const query=changes
+    ? env.DB.prepare('SELECT h.rowid AS page_cursor,r.* FROM history h JOIN records r ON r.id=h.record_id WHERE h.rowid>? AND h.rowid<=? ORDER BY h.rowid LIMIT ?').bind(after,until,limit+1)
+    : env.DB.prepare('SELECT rowid AS page_cursor,* FROM records WHERE deleted=0 AND rowid>? AND rowid<=? ORDER BY rowid LIMIT ?').bind(after,upper,limit+1);
+  const firstPage=!params.has('upper')&&!params.has('until')&&(!changes||after!==until);
+  const statements=[query];
+  if(firstPage) statements.push(env.DB.prepare('SELECT id,record_id,kind,action,label,created_at,undone,group_id FROM history ORDER BY rowid DESC LIMIT 100'));
+  const results=await env.DB.batch(statements);
+  const rows=results[0].results;
+  const page=rows.slice(0,limit);
+  return {
+    records:page.map(row=>({...unpack(row),deleted:!!row.deleted})),
+    ...(firstPage?{history:results[1].results}:{}),
+    next_cursor:rows.length>limit?page.at(-1).page_cursor:null,
+    change_cursor:until, upper_rowid:upper, total_active:meta.active_count,
+    max_active:MAX_ACTIVE_RECORDS, server_time:new Date().toISOString()
+  };
 }
 function version(value) { if(!Number.isInteger(value)||value<1) throw new AppError(400,'Falta la versión del registro.'); return value; }
 function mutationStatements(env, operations, groupId, action='edit') {
@@ -97,7 +122,7 @@ function mutationStatements(env, operations, groupId, action='edit') {
     const time=new Date().toISOString();
     if(op.create) {
       stmts.push(env.DB.prepare(`INSERT INTO history(id,record_id,kind,action,before_data,before_deleted,before_version,after_version,label,created_at,group_id)
-        SELECT ?,?,?,?,NULL,1,0,1,?,?,? WHERE NOT EXISTS(SELECT 1 FROM records WHERE id=?) AND (SELECT count(*) FROM records WHERE deleted=0)<5000`).bind(event,op.id,op.kind,action,op.label,time,groupId,op.id));
+        SELECT ?,?,?,?,NULL,1,0,1,?,?,? WHERE NOT EXISTS(SELECT 1 FROM records WHERE id=?)`).bind(event,op.id,op.kind,action,op.label,time,groupId,op.id));
       stmts.push(env.DB.prepare(`INSERT INTO records(id,kind,data,version,deleted) SELECT ?,?,?,1,0 WHERE EXISTS(SELECT 1 FROM history WHERE id=?)`).bind(op.id,op.kind,JSON.stringify(op.data),event));
     } else {
       stmts.push(env.DB.prepare(`INSERT INTO history(id,record_id,kind,action,before_data,before_deleted,before_version,after_version,label,created_at,group_id)
@@ -143,6 +168,7 @@ async function undo(env, eventId) {
   return json({ok:true});
 }
 async function api(request,env,path) {
+  const params=new URL(request.url).searchParams;
   if (!env.DB || !env.AUTH_USERNAME || !/^[a-f0-9]{64}$/.test(env.AUTH_PASSWORD_SHA256||'')) throw new AppError(503,'La despensa todavía no está configurada.');
   if(request.method!=='GET') requireSameOrigin(request);
   if(path==='/api/login' && request.method==='POST') return login(request,env);
@@ -157,18 +183,18 @@ async function api(request,env,path) {
     await env.DB.prepare('DELETE FROM sessions').run();
     return json({ok:true},200,{'Set-Cookie':cookie(request,env,'',0)});
   }
-  if(path==='/api/state'&&request.method==='GET') return json(await snapshot(env));
+  if(path==='/api/state'&&request.method==='GET') return json(await snapshot(env,params));
   if(path==='/api/export'&&request.method==='GET') {
-    const data=await snapshot(env);
-    return json({format:'despensa-v1',exported_at:new Date().toISOString(),records:data.records},200,{'Content-Disposition':`attachment; filename="despensa-${new Date().toISOString().slice(0,10)}.json"`});
+    const data=await snapshot(env,params);
+    return json({format:'despensa-v1',exported_at:new Date().toISOString(),...data});
   }
   const match=path.match(/^\/api\/(location|product|lot|shopping)(?:\/([a-zA-Z0-9_-]+))?$/);
   if(match) {
     const [,kind,id]=match;
     if(!id&&request.method==='POST') {
       const data=validate(kind,await readBody(request));
-      const count=await env.DB.prepare('SELECT count(*) AS total FROM records WHERE deleted=0').first();
-      if(count.total>=5000) throw new AppError(409,'Se alcanzó el límite de 5000 registros activos.');
+      const count=await env.DB.prepare('SELECT active_count AS total FROM inventory_meta WHERE id=1').first();
+      if(count.total>=MAX_ACTIVE_RECORDS) throw new AppError(409,'Se alcanzó el límite de 50.000 registros activos.');
       return commit(env,[{create:true,id:crypto.randomUUID(),kind,data,label:`Agregar ${data.name||'compra / lote'}`}],'create');
     }
     if(id&&['PUT','DELETE'].includes(request.method)) {
@@ -217,6 +243,7 @@ export default {
     } catch(error) {
       if(error instanceof AppError) return secure(json({error:error.message},error.status));
       const message=String(error.message||'');
+      if(/capacity_limit/.test(message)) return secure(json({error:'Se alcanzó el límite de 50.000 registros activos.'},409));
       if(/in_use|invalid_product|invalid_location|unit_in_use|CHECK constraint failed|UNIQUE constraint failed/.test(message)) {
         const explanation=/unit_in_use/.test(message)?'Este producto tiene lotes: mantené su unidad o creá otro producto.':/in_use/.test(message)?'Hay productos o compras asociados. Movelos o eliminalos primero.':/invalid_product|invalid_location/.test(message)?'El producto o lugar ya no existe. Actualizá e intentá otra vez.':'Alguien modificó este registro. Actualizá para ver el último cambio.';
         return secure(json({error:explanation},409));

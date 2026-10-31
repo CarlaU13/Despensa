@@ -1,3 +1,5 @@
+export const MAX_ACTIVE_RECORDS = 50000;
+export const CATEGORY_SUGGESTIONS = ['Alimentos', 'Limpieza', 'Higiene personal', 'Mascotas', 'Otros'];
 export const UNITS = ['unidad', 'paquete', 'kg', 'g', 'l', 'ml', 'pote', 'botella', 'lata', 'frasco', 'porción'];
 export const KINDS = ['location', 'product', 'lot', 'shopping'];
 export class AppError extends Error {
@@ -79,8 +81,10 @@ export function lotAlerts(lot, today = localToday()) {
   return alerts;
 }
 export function stocks(products, lots) {
+  const totals = new Map();
+  for (const lot of lots) totals.set(lot.product_id, (totals.get(lot.product_id) || 0) + lot.quantity);
   return products.map(p => {
-    const quantity = Math.round(lots.filter(l => l.product_id === p.id).reduce((sum,l) => sum + l.quantity, 0) * 1000) / 1000;
+    const quantity = Math.round((totals.get(p.id) || 0) * 1000) / 1000;
     return { ...p, quantity, low: p.minimum != null && quantity <= p.minimum };
   });
 }

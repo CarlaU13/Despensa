@@ -5,7 +5,7 @@ import worker from '../src/worker.mjs';
 import { database } from './sqlite.mjs';
 import { setup } from './setup.mjs';
 setup();
-const env={LOCAL_DEV:'true',DB:database('.local/despensa.sqlite')};
+const env={LOCAL_DEV:'true',DB:database(process.env.DESPENSA_DB_PATH||'.local/despensa.sqlite')};
 for(const line of readFileSync('.dev.vars','utf8').split('\n').filter(Boolean)){const index=line.indexOf('=');env[line.slice(0,index)]=JSON.parse(line.slice(index+1));}
 const types={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.webmanifest':'application/manifest+json'};
 const publicRoot=path.resolve('public');

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#354b36">
+<meta name="description" content="Tu despensa familiar: lo que hay, dónde está y qué hace falta.">
+<title>Despensa · En casa</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+<script src="/app.js" type="module"></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Ir al contenido</a>
+<div id="loading" class="loading" role="status">Preparando tu despensa…</div>
+<section id="login" class="login-screen" hidden>
+  <div class="login-story">
+    <a class="brand brand-light" href="/"><img src="/icon.svg" width="44" height="44" alt=""><span>despensa<span class="brand-small">EN CASA</span></span></a>
+    <div class="story-copy"><span class="eyebrow">UN POCO MÁS DE ORDEN, CADA DÍA</span><h1>Todo lo que hay.<br>Justo donde está.</h1><p>Un lugar para cuidar lo que compramos, saber qué nos falta y organizarnos en familia.</p><div class="pantry-art" aria-hidden="true"><span class="jar jar-one"></span><span class="jar jar-two"></span><span class="jar jar-three"></span><span class="shelf"></span><span class="leaf leaf-one"></span><span class="leaf leaf-two"></span></div></div>
+    <span class="story-footer">Nuestra casa, nuestra despensa.</span>
+  </div>
+  <div class="login-panel"><form id="login-form" class="login-form">
+    <span class="eyebrow">BIENVENIDOS A CASA</span><h2>Entrá a tu despensa</h2><p class="muted">Usá el acceso compartido de tu familia.</p>
+    <label>Usuario<input name="username" autocomplete="username" required maxlength="100" placeholder="Tu usuario familiar"></label>
+    <label>Contraseña<div class="password-field"><input name="password" type="password" autocomplete="current-password" required maxlength="256"><button type="button" id="show-password" class="text-button">Mostrar</button></div></label>
+    <p id="login-error" class="form-error" role="alert" hidden></p>
+    <button class="button primary wide" type="submit">Entrar a la despensa <span aria-hidden="true">↗</span></button>
+    <p class="login-note"><span aria-hidden="true">⌂</span> Un mismo acceso. Todo compartido con tu familia.</p>
+  </form></div>
+</section>
+<div id="app" class="app-shell" hidden>
+  <aside class="sidebar">
+    <a class="brand" href="/"><img src="/icon.svg" width="42" height="42" alt=""><span>despensa<span class="brand-small">EN CASA</span></span></a>
+    <div class="house-label"><span class="house-dot"></span> Nuestra casa <span class="private-label">Privada</span></div>
+    <nav id="navigation" aria-label="Navegación principal"></nav>
+    <div class="sidebar-bottom"><p>Menos desperdicio.<br>Más de lo que importa.</p><button class="account-button" data-action="account"><span class="avatar">F</span><span>Cuenta familiar<small>Todos en la misma casa</small></span><span aria-hidden="true">⋯</span></button></div>
+  </aside>
+  <div class="app-content">
+    <header class="topbar"><span id="breadcrumb">Nuestra casa / Resumen</span><div class="topbar-right"><span id="sync-status" role="status">Conectado</span><button class="icon-button" data-action="refresh" aria-label="Actualizar datos">↻</button><button class="avatar small avatar-button" data-action="account" aria-label="Abrir cuenta familiar">F</button></div></header>
+    <main id="main" tabindex="-1">
+      <div class="page-heading"><div><div class="eyebrow" id="page-eyebrow">TU CASA, EN ORDEN</div><h1 id="page-title">Un vistazo a la despensa</h1><p id="page-description" class="muted"></p></div><button class="button primary" data-action="new-lot"><span aria-hidden="true">＋</span> Registrar compra</button></div>
+      <div id="page"></div>
+    </main>
+    <footer class="page-footer"><span>Despensa familiar · Hecho para compartir en casa</span><button class="text-button" data-action="export">Descargar mis datos ↗</button></footer>
+  </div>
+</div>
+<dialog id="editor" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+<noscript>Activá JavaScript para usar la despensa.</noscript>
+</body>
+</html>

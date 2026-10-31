@@ -1,0 +1,13 @@
+node_modules/
+.wrangler/
+.local/
+.dev.vars*
+.env*
+!.env.example
+ACCESO-LOCAL.txt
+*.sqlite*
+*.log
+backup*.sql
+backup*.json
+coverage/
+artifacts/

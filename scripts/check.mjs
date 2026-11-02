@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-function walk(dir){return readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(`${dir}/${e.name}`):[`${dir}/${e.name}`]);}
+function walk(dir){return readdirSync(dir,{withFileTypes:true}).filter(e=>e.name!=='vendor').flatMap(e=>e.isDirectory()?walk(`${dir}/${e.name}`):[`${dir}/${e.name}`]);}
 for(const file of ['src','scripts','public','test'].flatMap(walk).filter(f=>/\.(mjs|js)$/.test(f))){
   const result=spawnSync(process.execPath,['--check',file],{stdio:'inherit'});if(result.status)process.exit(result.status);
 }

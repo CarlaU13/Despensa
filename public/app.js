@@ -1,4 +1,4 @@
-import { UNITS, lotAlerts, stocks, localToday, CATEGORY_SUGGESTIONS } from './domain.mjs';
+import { UNITS, lotAlerts, stocks, localToday, CATEGORY_SUGGESTIONS, normalizeBarcode, BARCODE_SOURCES } from './domain.mjs';
 import { syncRecords, groupRecords } from './sync.mjs';
 const $ = selector => document.querySelector(selector);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -55,7 +55,7 @@ const productName = id => find(id)?.name || 'Producto';
 const unitName = product => product?.unit || 'unidad';
 const tag = alert => '<span class="badge '+(['expired','attention'].includes(alert.type)?'red':'amber')+'">'+escape(alert.label)+'</span>';
 function notify(message,error=false){const toast=$('#toast');toast.textContent=message;toast.classList.toggle('error',error);toast.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.hidden=true,5500);}
-function showLogin(){username='';requestSequence++;state={records:[],history:[]};recordMap=new Map();syncCursor=null;reindex();$('#app').hidden=true;$('#login').hidden=false;$('#loading').hidden=true;$('#login-form').elements.password.value='';if($('#editor').open)$('#editor').close();}
+function showLogin(){username='';requestSequence++;state={records:[],history:[]};recordMap=new Map();syncCursor=null;reindex();$('#app').hidden=true;$('#login').hidden=false;$('#loading').hidden=true;$('#login-form').elements.password.value='';if($('#editor').open)$('#editor').close();closeBarcode();}
 async function api(path,method='GET',body){
  const response=await fetch(path,{method,credentials:'same-origin',headers:method==='GET'?{}:{'Content-Type':'application/json','X-Despensa':'1'},...(body!==undefined?{body:JSON.stringify(body)}:{})});
  const data=await response.json().catch(()=>({error:'La respuesta del servidor no es válida.'}));
@@ -121,13 +121,13 @@ function homeView(){
 }
 function normalized(value){return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();}
 function inventoryView(){
- const all=products().filter(matchesCategory).filter(p=>normalized(p.name+' '+(p.category||'')).includes(normalized(search)));
+ const all=products().filter(matchesCategory).filter(p=>normalized(p.name+' '+(p.category||'')+' '+(p.brand||'')+' '+(p.presentation||'')+' '+(p.barcode||'')).includes(normalized(search)));
  let list=all.map(p=>({...p,lots:(indexes.lotsByProduct.get(p.id)||[]).filter(l=>(!location|| (location==='none'?!l.location_id:l.location_id===location))&&(showEmpty||l.quantity>0))})).filter(p=>p.lots.length&&( !onlyAlerts ||p.low||p.lots.some(l=>lotAlerts(l,renderedToday).length)));
  list.sort((a,b)=>a.name.localeCompare(b.name,'es'));
  const shown=pageItems(list,'inventory');
  return '<div class="toolbar"><label class="search-box"><span aria-hidden="true">⌕</span><input id="inventory-search" aria-label="Buscar productos" placeholder="Buscar en la despensa…" value="'+escape(search)+'"></label><select id="location-filter" aria-label="Filtrar por lugar"><option value="">Todos los lugares</option><option value="none"'+(location==='none'?' selected':'')+'>Sin lugar asignado</option>'+records('location').map(l=>'<option value="'+l.id+'"'+(location===l.id?' selected':'')+'>'+escape(l.name)+'</option>').join('')+'</select><select id="category-filter" aria-label="Filtrar por categoría">'+categoryOptions()+'</select><button class="filter-button '+(onlyAlerts?'selected':'')+'" data-action="toggle-alerts" aria-pressed="'+onlyAlerts+'">⚑ Necesitan atención</button><button class="filter-button '+(showEmpty?'selected':'')+'" data-action="toggle-empty" aria-pressed="'+showEmpty+'">Incluir agotados</button></div>'+
  '<div class="results-meta"><span>'+list.length+' producto'+(list.length===1?'':'s')+(location?' en este lugar':'')+'</span><span>Ordenados por nombre</span></div>'+
- (list.length?'<div class="inventory-list">'+shown.map(p=>'<details data-product="'+p.id+'" class="product-card"'+(search||onlyAlerts?' open':'')+'><summary class="product-summary"><div class="food-mark">'+icon('inventory')+'</div><div class="product-info"><div class="product-name">'+escape(p.name)+'</div><div class="row-meta">'+escape(p.category||'Sin categoría')+' · '+p.lots.length+' lote'+(p.lots.length===1?'':'s')+(p.low?' · <span class="badge amber">Stock bajo</span>':'')+'</div></div><div class="stock-total">'+num(p.lots.reduce((s,l)=>s+l.quantity,0))+' <small>'+escape(p.unit)+'</small></div><span class="disclosure" aria-hidden="true">⌄</span></summary><div class="product-lots">'+p.lots.slice().sort((a,b)=>(a.expiry_date||'9999').localeCompare(b.expiry_date||'9999')||(a.purchase_date||'9999').localeCompare(b.purchase_date||'9999')).slice(0,lotLimits.get(p.id)||20).map(l=>lotRow(l,p)).join('')+(p.lots.length>(lotLimits.get(p.id)||20)?'<button class="text-button" data-action="more-lots" data-id="'+p.id+'">Ver más lotes ('+p.lots.length+' en total)</button>':'')+'<button class="text-button" data-action="new-lot" data-id="'+p.id+'">＋ Agregar otra compra de este producto</button></div></details>').join('')+'</div>'+pagination(list.length,'inventory'):
+ (list.length?'<div class="inventory-list">'+shown.map(p=>'<details data-product="'+p.id+'" class="product-card"'+(search||onlyAlerts?' open':'')+'><summary class="product-summary"><div class="food-mark">'+icon('inventory')+'</div><div class="product-info"><div class="product-name">'+escape(p.name)+'</div><div class="row-meta">'+escape([p.brand,p.presentation,p.category].filter(Boolean).join(' · ')||'Sin categoría')+' · '+p.lots.length+' lote'+(p.lots.length===1?'':'s')+(p.low?' · <span class="badge amber">Stock bajo</span>':'')+'</div></div><div class="stock-total">'+num(p.lots.reduce((s,l)=>s+l.quantity,0))+' <small>'+escape(p.unit)+'</small></div><span class="disclosure" aria-hidden="true">⌄</span></summary><div class="product-lots">'+p.lots.slice().sort((a,b)=>(a.expiry_date||'9999').localeCompare(b.expiry_date||'9999')||(a.purchase_date||'9999').localeCompare(b.purchase_date||'9999')).slice(0,lotLimits.get(p.id)||20).map(l=>lotRow(l,p)).join('')+(p.lots.length>(lotLimits.get(p.id)||20)?'<button class="text-button" data-action="more-lots" data-id="'+p.id+'">Ver más lotes ('+p.lots.length+' en total)</button>':'')+'<button class="text-button" data-action="new-lot" data-id="'+p.id+'">＋ Agregar otra compra de este producto</button></div></details>').join('')+'</div>'+pagination(list.length,'inventory'):
  '<section class="panel">'+empty(search||location||onlyAlerts||categoryFilter?'No encontramos productos con estos filtros':'Todavía no hay compras registradas',search||location||onlyAlerts||categoryFilter?'Probá con otro nombre, lugar o filtro.':'Empezá con algo que ya tengas en casa.','new-lot','＋ Registrar compra')+'</section>');
 }
 function lotRow(l,p){
@@ -136,7 +136,7 @@ function lotRow(l,p){
  (l.expiry_date?'<p>Vence: '+date(l.expiry_date)+'</p>':'<p>Sin vencimiento registrado</p>')+(l.opened_date?'<p>Abierto: '+date(l.opened_date)+'</p>':'')+(l.frozen_date?'<p>Congelado: '+date(l.frozen_date)+'</p>':'')+(l.review_date?'<p>Revisar: '+date(l.review_date)+'</p>':'')+(l.price!=null?'<p>Precio de compra: '+money(l.price)+'</p>':'')+'<div class="badges">'+alerts.map(tag).join('')+'</div></div><div class="actions">'+(l.quantity>0?'<button class="button small-button" data-action="consume" data-id="'+l.id+'">Consumir</button><button class="button small-button" data-action="move" data-id="'+l.id+'">Mover</button>':'')+'<button class="button small-button" data-action="edit" data-id="'+l.id+'">Editar</button></div></div>';
 }
 function productsView(){
- const ps=products().filter(matchesCategory).filter(p=>normalized(p.name+' '+(p.category||'')).includes(normalized(search))).sort((a,b)=>a.name.localeCompare(b.name,'es'));
+ const ps=products().filter(matchesCategory).filter(p=>normalized(p.name+' '+(p.category||'')+' '+(p.brand||'')+' '+(p.presentation||'')+' '+(p.barcode||'')).includes(normalized(search))).sort((a,b)=>a.name.localeCompare(b.name,'es'));
  const shown=pageItems(ps,'products');
  return '<div class="toolbar"><label class="search-box"><span aria-hidden="true">⌕</span><input id="product-search" aria-label="Buscar en el catálogo" placeholder="Buscar en el catálogo…" value="'+escape(search)+'"></label><select id="category-filter" aria-label="Filtrar por categoría">'+categoryOptions()+'</select><button class="button secondary" data-action="new-product">＋ Nuevo producto</button><span class="muted field-help">Cada producto tiene una unidad. Sus compras comparten esa unidad.</span></div>'+
  (ps.length?'<div class="table-wrap"><table><thead><tr><th>PRODUCTO</th><th>EN CASA</th><th>MÍNIMO</th><th></th></tr></thead><tbody>'+shown.map(p=>'<tr><td><strong>'+escape(p.name)+'</strong><div class="row-meta">'+escape(p.category||'Sin categoría')+'</div></td><td>'+num(p.quantity)+' '+escape(p.unit)+(p.low?' <span class="badge amber">Reponer</span>':'')+'</td><td>'+(p.minimum==null?'Sin definir':num(p.minimum)+' '+escape(p.unit))+'</td><td><div class="actions"><button class="text-button" data-action="edit" data-id="'+p.id+'">Editar</button><button class="text-button" data-action="add-product-shopping" data-id="'+p.id+'">A la lista</button></div></td></tr>').join('')+'</tbody></table></div>'+pagination(ps.length,'products'):'<section class="panel">'+empty(search||categoryFilter?'No encontramos productos con estos filtros':'El catálogo empieza con un producto',search||categoryFilter?'Probá con otra categoría o con otro nombre.':'Puede ser comida, un artículo de limpieza, higiene o cualquier producto de tu casa.','new-product','＋ Agregar producto')+'</section>');
@@ -170,6 +170,10 @@ function input(name,label,value='',type='text',extra=''){
  return '<label>'+label+'<input name="'+name+'" type="'+type+'" value="'+escape(value)+'" '+extra+'></label>';
 }
 function notes(value){return '<label class="full">Notas <span class="field-help">Opcional</span><textarea name="notes" maxlength="2000" placeholder="Lo que quieras recordar…">'+escape(value)+'</textarea></label>';}
+function barcodeCredit(item){
+ const source=BARCODE_SOURCES[item.barcode_source];
+ return source&&item.barcode?'<p class="field-help">Datos de <a href="https://'+source.host+'/product/'+escape(item.barcode)+'" target="_blank" rel="noopener noreferrer">'+escape(source.label)+'</a> · ODbL. Revisá nombre, marca y presentación.</p>':'';
+}
 function footer(edit=false,label='Guardar'){return '<p id="dialog-error" class="form-error" role="alert" hidden></p><div class="form-actions">'+(edit?'<button type="button" class="button danger" data-action="delete-record">Eliminar</button>':'')+'<button type="button" class="button" data-action="close-dialog">Cancelar</button><button type="submit" class="button primary">'+label+'</button></div>';}
 function openDialog(mode,item={},extra={}){
  if(busy)return;
@@ -178,10 +182,10 @@ function openDialog(mode,item={},extra={}){
  const hints={location:'Poné el nombre que usan en casa.',product:'La categoría describe qué es; el lugar indica dónde lo guardás. Solo el nombre es obligatorio.',lot:'Cantidad inicial: 1. Todos los detalles adicionales son opcionales.',shopping:'Podés elegir un producto o escribir algo nuevo.',consume:'Se descontará únicamente de este lote.',move:'Mové todo el lote o solo una parte.',receive:'Confirmá los datos para ingresarlo al inventario.',account:'Un acceso compartido por toda la familia.'};
  let body='';
  if(mode==='location')body='<div class="form-grid">'+input('name','Nombre',item.name,'text','required maxlength="100" placeholder="Ej.: Heladera 1"')+'<div></div>'+notes(item.notes)+'</div>';
- if(mode==='product')body='<div class="form-grid">'+input('name','Nombre',item.name,'text','required maxlength="140" placeholder="Ej.: Leche"')+input('category','Categoría (opcional)',item.category,'text','maxlength="80" list="category-suggestions" placeholder="Ej.: Limpieza, Alimentos o Lácteos"')+'<datalist id="category-suggestions">'+[...new Set([...CATEGORY_SUGGESTIONS,...records('product').map(p=>p.category).filter(Boolean)])].map(c=>'<option value="'+escape(c)+'"></option>').join('')+'</datalist>'+'<label>Unidad<select name="unit">'+unitOptions(item.unit)+'</select><span class="field-help">Cada compra se mide en esta unidad.</span></label>'+input('minimum','Avisar con este stock o menos (opcional)',item.minimum,'number','min="0" max="1000000000" step="0.001"')+notes(item.notes)+'</div>';
+ if(mode==='product')body='<div class="form-grid">'+input('name','Nombre',item.name,'text','required maxlength="140" placeholder="Ej.: Leche"')+input('category','Categoría (opcional)',item.category,'text','maxlength="80" list="category-suggestions" placeholder="Ej.: Limpieza, Alimentos o Lácteos"')+'<datalist id="category-suggestions">'+[...new Set([...CATEGORY_SUGGESTIONS,...records('product').map(p=>p.category).filter(Boolean)])].map(c=>'<option value="'+escape(c)+'"></option>').join('')+'</datalist>'+'<label>Unidad<select name="unit">'+unitOptions(item.unit)+'</select><span class="field-help">Cada compra se mide en esta unidad.</span></label>'+input('minimum','Avisar con este stock o menos (opcional)',item.minimum,'number','min="0" max="1000000000" step="0.001"')+input('brand','Marca (opcional)',item.brand,'text','maxlength="100"')+input('presentation','Presentación (opcional)',item.presentation,'text','maxlength="100" placeholder="Ej.: botella de 500 ml"')+'<div class="full">'+input('barcode','Código de barras (opcional)',item.barcode,'text','inputmode="numeric" maxlength="30" autocomplete="off"')+'<button type="button" class="text-button" data-action="barcode">▥ Escanear o buscar código</button><input type="hidden" name="barcode_source" value="'+escape(item.barcode_source)+'">'+barcodeCredit(item)+'</div>'+notes(item.notes)+'</div>';
  if(['lot','receive'].includes(mode)){
  const productId=item.product_id||extra.productId||'';
- body='<div class="form-grid"><label class="full">Producto<select name="product_id" required>'+options(catalogCache,productId,'Elegí un producto')+'</select><button type="button" class="text-button" data-action="create-product-in-dialog">＋ Crear un producto nuevo</button></label>'+input('quantity','Cantidad',item.quantity??1,'number','min="'+(item.id?0:0.001)+'" max="1000000000" step="0.001" required')+'<label>Lugar (opcional)<select name="location_id">'+options(records('location'),item.location_id,'Sin lugar asignado')+'</select></label></div><p id="lot-unit" class="field-help">Unidad: '+escape(unitName(find(productId)))+'</p><details class="optional-fields"'+(item.id?' open':'')+'><summary>Fechas, precio y otros detalles · Opcionales</summary><div class="form-grid">'+
+ body='<div class="form-grid"><label class="full">Producto<select name="product_id" required>'+options(catalogCache,productId,'Elegí un producto')+'</select><button type="button" class="text-button" data-action="create-product-in-dialog">＋ Crear un producto nuevo</button><button type="button" class="text-button" data-action="barcode">▥ Escanear o buscar código</button></label>'+input('quantity','Cantidad',item.quantity??1,'number','min="'+(item.id?0:0.001)+'" max="1000000000" step="0.001" required')+'<label>Lugar (opcional)<select name="location_id">'+options(records('location'),item.location_id,'Sin lugar asignado')+'</select></label></div><p id="lot-unit" class="field-help">Unidad: '+escape(unitName(find(productId)))+'</p><details class="optional-fields"'+(item.id?' open':'')+'><summary>Fechas, precio y otros detalles · Opcionales</summary><div class="form-grid">'+
  input('purchase_date','Fecha de compra',item.purchase_date||'','date')+input('expiry_date','Vencimiento',item.expiry_date||'','date')+input('opened_date','Fecha de apertura',item.opened_date||'','date')+input('frozen_date','Fecha de congelación',item.frozen_date||'','date')+input('review_date','Volver a revisar el',item.review_date||'','date')+input('price','Precio pagado (opcional)',item.price,'number','min="0" max="1000000000" step="0.01"')+notes(item.notes)+'<label class="checkbox-label full"><input type="checkbox" name="attention"'+(item.attention?' checked':'')+'> Marcar para revisar el estado</label></div></details>';
  }
  if(mode==='shopping')body='<div class="form-grid"><label class="full">Producto del catálogo (opcional)<select name="product_id">'+options(catalogCache,item.product_id,'Escribir un artículo nuevo')+'</select></label>'+input('name','Qué hace falta',item.name,'text','required maxlength="140" placeholder="Ej.: Tomates"')+input('quantity','Cantidad',item.quantity??1,'number','required min="0.001" max="1000000000" step="0.001"')+'<label>Unidad<select name="unit">'+unitOptions(item.unit)+'</select></label><div></div>'+notes(item.notes)+'</div>';
@@ -218,12 +222,92 @@ async function saveForm(event){
  }
  $('#editor').close();notify(mode==='receive'?'Compra ingresada al inventario.':'Cambio guardado.');await refresh(true);
  if(context.returnTo){
- const created=records('product').find(p=>p.id===context.createdId)||records('product').slice().reverse().find(p=>p.name===data.name);
+ const created=records('product').find(p=>p.id===context.createdId)||(data.barcode?records('product').find(p=>p.barcode===normalizeBarcode(data.barcode)):null)||records('product').slice().reverse().find(p=>p.name===data.name);
  busy=false;openDialog(context.returnTo.mode,{...context.returnTo.item,product_id:created?.id||''},context.returnTo.extra);
  }
  }catch(error){if($('#dialog-error')){$('#dialog-error').textContent=error.message;$('#dialog-error').hidden=false;}else notify(error.message,true);if(error.status===409)refresh(true).catch(()=>{});}
  finally{busy=false;buttons.forEach(b=>b.disabled=false);}
 }
+
+let scanContext=null,scanResult=null,scanControls=null,scanEpoch=0,lookupEpoch=0,scannerModule=null;
+async function scanner(){return scannerModule||(scannerModule=import('./vendor/scanner.js'));}
+function stopCamera(){
+ scanEpoch++;scanControls?.stop();scanControls=null;
+ const video=$('#barcode-video');for(const track of video?.srcObject?.getTracks()||[])track.stop();
+ if(video)video.srcObject=null;
+ $('#barcode-camera-panel').hidden=true;
+}
+function closeBarcode(){lookupEpoch++;stopCamera();if($('#barcode-dialog').open)$('#barcode-dialog').close();}
+function openBarcode(){
+ if(busy)return;
+ scanContext=$('#editor').open?{mode:dialogState.mode,item:{...dialogState.item},draft:formData($('#editor-form')),extra:{shopping:dialogState.shopping,productId:dialogState.productId}}:{mode:'new-lot'};
+ scanResult=null;$('#barcode-input').value=scanContext.draft?.barcode||'';$('#barcode-result').innerHTML='';
+ $('#barcode-message').textContent='Se busca primero en tu catálogo. Si es nuevo, enviamos solo el código a Open Food Facts y sus bases relacionadas. Las imágenes se procesan en este dispositivo.';
+ if(!$('#barcode-dialog').open)$('#barcode-dialog').showModal();
+}
+async function searchBarcode(){
+ stopCamera();const epoch=++lookupEpoch;scanResult=null;$('#barcode-result').innerHTML='';
+ const code=normalizeBarcode($('#barcode-input').value);if(!code)throw Error('Ingresá o escaneá un código.');
+ $('#barcode-input').value=code;$('#barcode-result').innerHTML='';
+ $('#barcode-message').textContent='Buscando el producto…';
+ const local=records('product').find(p=>p.barcode===code);
+ const result=local?{status:'existing',barcode:code,product:local}:await api('/api/barcode/lookup','POST',{barcode:code});
+ if(epoch!==lookupEpoch||!$('#barcode-dialog').open)return;
+ scanResult=result;
+ const p=result.product||{};
+ if(result.status==='existing'){
+ $('#barcode-message').textContent='Este código ya está en tu catálogo.';
+ $('#barcode-result').innerHTML='<div class="barcode-card"><h3>'+escape(p.name)+'</h3><p>'+escape([p.brand,p.presentation,p.category].filter(Boolean).join(' · '))+'</p><button class="button primary" data-action="barcode-use">Usar producto existente</button></div>';return;
+ }
+ const found=result.status==='found';
+ $('#barcode-message').textContent=found?'Encontramos estos datos. Podés revisarlos y corregirlos antes de guardar.':result.status==='not_found'?'No encontramos este código en las bases consultadas. Cargalo una vez y quedará asociado.':result.reason==='rate_limit'?'Alcanzamos el límite temporal de consultas. Podés cargarlo manualmente o volver a buscar en un minuto.':'La consulta externa no está disponible ahora. Podés cargarlo manualmente.';
+ $('#barcode-result').innerHTML='<div class="barcode-card">'+(found?'<h3>'+escape(p.name||'Nombre no disponible')+'</h3><p>Marca: '+escape(p.brand||'Sin datos')+'<br>Presentación: '+escape(p.presentation||'Sin datos')+'</p>'+barcodeCredit(p):'')+'<button class="button primary" data-action="barcode-use">'+(found?'Revisar y crear producto':'Cargar producto manualmente')+'</button></div>';
+}
+async function startCamera(){
+ stopCamera();const epoch=scanEpoch;
+ if(!navigator.mediaDevices?.getUserMedia)throw Error('Este navegador no permite usar la cámara. Escribí el código o usá una foto.');
+ $('#barcode-camera-panel').hidden=false;$('#barcode-message').textContent='Apuntá la cámara al código de barras. Mantené el envase quieto y con buena luz.';
+ try{
+ const module=await scanner();
+ if(epoch!==scanEpoch||!$('#barcode-dialog').open)return;
+ const control=await module.startScanner($('#barcode-video'),value=>{
+ if(epoch!==scanEpoch||!$('#barcode-dialog').open)return;
+ $('#barcode-input').value=value;searchBarcode().catch(scanError);
+ },()=>epoch===scanEpoch&&$('#barcode-dialog').open);
+ if(epoch!==scanEpoch||!$('#barcode-dialog').open)control.stop();else scanControls=control;
+ }catch(error){
+ stopCamera();
+ throw Error(error.name==='NotAllowedError'?'No se habilitó la cámara. Podés permitirla en el navegador, leer una foto o escribir el código.':error.name==='NotFoundError'?'No encontramos una cámara disponible. Podés escribir el código o leer una foto.':'No pudimos iniciar la cámara. Cerrá otras aplicaciones que la usen o ingresá el código manualmente.');
+ }
+}
+function scanError(error){$('#barcode-message').textContent=error.message||'No pudimos leer el código. Probá otra vez o ingresalo manualmente.';}
+function applyBarcode(){
+ if(!scanResult)return;
+ const context=scanContext,result=scanResult;
+ closeBarcode();
+ if(result.status==='existing'){
+ const product=result.product;
+ if(context.mode==='product'){
+ openDialog('product',product);return;
+ }
+ if(['lot','receive','shopping'].includes(context.mode)){
+ const draft={...context.item,...context.draft,product_id:product.id};
+ if(context.mode==='shopping'){draft.name=product.name;draft.unit=product.unit;}
+ openDialog(context.mode,draft,context.extra);return;
+ }
+ openDialog('lot',{}, {productId:product.id});return;
+ }
+ const suggestion={...(result.product||{}),barcode:result.barcode};
+ if(context.mode==='product'){
+ const form=$('#editor-form');
+ for(const key of ['name','brand','presentation','category'])if(suggestion[key]&&!form.elements[key].value)form.elements[key].value=suggestion[key];
+ form.elements.barcode.value=result.barcode;form.elements.barcode_source.value=suggestion.barcode_source||'';
+ return;
+ }
+ const returnTo=context.mode==='new-lot'?{mode:'lot',item:{},extra:{}}:{mode:context.mode,item:{...context.item,...context.draft},extra:context.extra};
+ openDialog('product',suggestion,{returnTo});
+}
+
 async function downloadExport(){
  const exportState=await syncRecords(api,new Map(),null);
  const data={format:'despensa-v1',exported_at:new Date().toISOString(),records:[...exportState.map.values()].map(({deleted,...record})=>record)};
@@ -234,6 +318,12 @@ async function downloadExport(){
 }
 async function perform(action,id,button){
  if(busy&&!['close-dialog'].includes(action))return;
+ if(action==='barcode'){openBarcode();return;}
+ if(action==='barcode-close'){closeBarcode();return;}
+ if(action==='barcode-stop'){stopCamera();return;}
+ if(action==='barcode-photo'){$('#barcode-photo').click();return;}
+ if(action==='barcode-camera'){try{await startCamera();}catch(error){scanError(error);}return;}
+ if(action==='barcode-use'){applyBarcode();return;}
  const item=id?find(id):null;
  if(action==='list-page'){pagePositions.set(button.dataset.key,(pagePositions.get(button.dataset.key)||1)+Number(button.dataset.direction));render();$('#main').focus();return;}
  if(action==='more-lots'){lotLimits.set(id,(lotLimits.get(id)||20)+20);render();return;}
@@ -306,8 +396,27 @@ document.addEventListener('input',event=>{
 });
 document.addEventListener('change',event=>{
  if(event.target.id==='location-filter'){location=event.target.value;pagePositions.set('inventory',1);render();}
+ if(event.target.name==='barcode'&&event.target.closest('#editor-form')){
+ const source=$('#editor-form').elements.barcode_source;if(source)source.value='';
+ }
  if(event.target.id==='category-filter'){categoryFilter=event.target.value;pagePositions.set('inventory',1);pagePositions.set('products',1);render();}
 });
+$('#barcode-input').addEventListener('input',()=>{lookupEpoch++;scanResult=null;$('#barcode-result').innerHTML='';});
+$('#barcode-form').addEventListener('submit',event=>{event.preventDefault();searchBarcode().catch(scanError);});
+$('#barcode-dialog').addEventListener('cancel',()=>{lookupEpoch++;stopCamera();});
+$('#barcode-photo').addEventListener('change',async event=>{
+ const file=event.target.files?.[0];event.target.value='';if(!file)return;
+ stopCamera();const epoch=scanEpoch;
+ if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>10*1024*1024){scanError(Error('Elegí una imagen JPG, PNG o WebP de hasta 10 MB.'));return;}
+ const url=URL.createObjectURL(file);$('#barcode-message').textContent='Leyendo el código de la foto en este dispositivo…';
+ try{
+ const image=new Image();image.src=url;await image.decode();const module=await scanner();
+ const code=await module.decodePhoto(image);if(epoch!==scanEpoch||!$('#barcode-dialog').open)return;
+ $('#barcode-input').value=code;await searchBarcode();
+ }catch{scanError(Error('No encontramos un código legible en la foto. Probá con una imagen más cerca del código o ingresalo manualmente.'));}
+ finally{URL.revokeObjectURL(url);}
+});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera();});
 $('#editor').addEventListener('cancel',event=>{if(busy)event.preventDefault();});
 $('#show-password').addEventListener('click',()=>{const input=$('#login-form').elements.password;input.type=input.type==='password'?'text':'password';$('#show-password').textContent=input.type==='password'?'Mostrar':'Ocultar';});
 $('#login-form').addEventListener('submit',async event=>{

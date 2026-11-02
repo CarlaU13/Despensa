@@ -38,13 +38,20 @@
   <div class="app-content">
     <header class="topbar"><span id="breadcrumb">Nuestra casa / Resumen</span><div class="topbar-right"><span id="sync-status" role="status">Conectado</span><button class="icon-button" data-action="refresh" aria-label="Actualizar datos">↻</button><button class="avatar small avatar-button" data-action="account" aria-label="Abrir cuenta familiar">F</button></div></header>
     <main id="main" tabindex="-1">
-      <div class="page-heading"><div><div class="eyebrow" id="page-eyebrow">TU CASA, EN ORDEN</div><h1 id="page-title">Un vistazo a la despensa</h1><p id="page-description" class="muted"></p></div><button class="button primary" data-action="new-lot"><span aria-hidden="true">＋</span> Registrar compra</button></div>
+      <div class="page-heading"><div><div class="eyebrow" id="page-eyebrow">TU CASA, EN ORDEN</div><h1 id="page-title">Un vistazo a la despensa</h1><p id="page-description" class="muted"></p></div><div class="actions heading-actions"><button class="button" data-action="barcode">▥ Escanear código</button><button class="button primary" data-action="new-lot"><span aria-hidden="true">＋</span> Registrar compra</button></div></div>
       <div id="page"></div>
     </main>
     <footer class="page-footer"><span>Despensa familiar · Hecho para compartir en casa</span><button class="text-button" data-action="export">Descargar mis datos ↗</button></footer>
   </div>
 </div>
 <dialog id="editor" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>
+<dialog id="barcode-dialog" aria-labelledby="barcode-title">
+  <div class="dialog-header"><div><h2 id="barcode-title">Escanear un producto</h2><p class="muted">Buscá por código y revisá los datos antes de guardarlos.</p></div><button type="button" class="icon-button" data-action="barcode-close" aria-label="Cerrar escáner">×</button></div>
+  <form id="barcode-form"><label>Código de barras<input id="barcode-input" name="barcode" inputmode="numeric" autocomplete="off" maxlength="30" placeholder="Escaneá o escribí los números" required></label><div class="actions barcode-actions"><button class="button primary" type="submit">Buscar código</button><button class="button" type="button" data-action="barcode-camera">Usar cámara</button><button class="button" type="button" data-action="barcode-photo">Leer una foto</button><input id="barcode-photo" type="file" accept="image/png,image/jpeg,image/webp" capture="environment" hidden></div></form>
+  <div id="barcode-camera-panel" hidden><video id="barcode-video" muted playsinline autoplay></video><button class="text-button" data-action="barcode-stop">Detener cámara</button></div>
+  <p id="barcode-message" class="field-help" role="status">Se busca primero en tu catálogo. Para productos nuevos enviamos solo el código a Open Food Facts y sus bases relacionadas. Las imágenes se procesan en este dispositivo.</p>
+  <div id="barcode-result"></div>
+</dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 <noscript>Activá JavaScript para usar la despensa.</noscript>
 </body>

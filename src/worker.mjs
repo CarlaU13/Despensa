@@ -1,3 +1,4 @@
+import { lookupBarcode } from './barcodes.mjs';
 import { AppError, identifier, validate, MAX_ACTIVE_RECORDS } from './domain.mjs';
 
 const enc = new TextEncoder();
@@ -17,8 +18,8 @@ function secure(response) {
   const result = new Response(response.body, response);
   for (const [key, value] of Object.entries({
     'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'no-referrer',
-    'X-Frame-Options':'DENY', 'Permissions-Policy':'camera=(), microphone=(), geolocation=()',
-    'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    'X-Frame-Options':'DENY', 'Permissions-Policy':'camera=(self), microphone=(), geolocation=()',
+    'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     'Strict-Transport-Security':'max-age=31536000', 'Cross-Origin-Resource-Policy':'same-origin'
   })) result.headers.set(key,value);
   return result;
@@ -174,6 +175,10 @@ async function api(request,env,path) {
   if(path==='/api/login' && request.method==='POST') return login(request,env);
   const currentSession=await session(request,env);
   if(!currentSession) throw new AppError(401,'Iniciá sesión para entrar a tu despensa.');
+  if(path==='/api/barcode/lookup'&&request.method==='POST') {
+    const body=await readBody(request);
+    return json(await lookupBarcode(env.DB,body.barcode));
+  }
   if(path==='/api/session'&&request.method==='GET') return json({username:env.AUTH_USERNAME});
   if(path==='/api/logout'&&request.method==='POST') {
     await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(currentSession).run();
@@ -199,7 +204,10 @@ async function api(request,env,path) {
     }
     if(id&&['PUT','DELETE'].includes(request.method)) {
       const body=await readBody(request); const old=await record(env,id,kind);
-      const data=request.method==='DELETE'?JSON.parse(old.data):validate(kind,body.data);
+      if(request.method==='PUT'&&(!body.data||typeof body.data!=='object'||Array.isArray(body.data)))throw new AppError(400,'Datos inválidos.');
+      const previous=JSON.parse(old.data);
+      const data=request.method==='DELETE'?previous:validate(kind,{...previous,...body.data});
+      if(kind==='product'&&request.method==='PUT'&&data.barcode!==previous.barcode&&!Object.hasOwn(body.data,'barcode_source'))data.barcode_source=null;
       return commit(env,[{id,kind,version:version(body.version),data,deleted:request.method==='DELETE',label:body.action==='consume'?'Registrar consumo':body.action==='move'?'Mover de lugar':`${request.method==='DELETE'?'Eliminar':'Editar'} ${data.name||'compra / lote'}`}],request.method==='DELETE'?'delete':'edit');
     }
   }
@@ -243,6 +251,7 @@ export default {
     } catch(error) {
       if(error instanceof AppError) return secure(json({error:error.message},error.status));
       const message=String(error.message||'');
+      if(/product_barcode_unique/.test(message)) return secure(json({error:'Este código ya está asociado a otro producto. Buscalo desde Escanear código para usarlo.'},409));
       if(/capacity_limit/.test(message)) return secure(json({error:'Se alcanzó el límite de 50.000 registros activos.'},409));
       if(/in_use|invalid_product|invalid_location|unit_in_use|CHECK constraint failed|UNIQUE constraint failed/.test(message)) {
         const explanation=/unit_in_use/.test(message)?'Este producto tiene lotes: mantené su unidad o creá otro producto.':/in_use/.test(message)?'Hay productos o compras asociados. Movelos o eliminalos primero.':/invalid_product|invalid_location/.test(message)?'El producto o lugar ya no existe. Actualizá e intentá otra vez.':'Alguien modificó este registro. Actualizá para ver el último cambio.';

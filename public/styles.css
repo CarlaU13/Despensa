@@ -13,3 +13,8 @@
 .pagination{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:16px 0 24px;color:#6c785e;font-size:12px}
 #category-filter{max-width:230px}
 @media(max-width:620px){.pagination{flex-wrap:wrap}.pagination>.actions{margin-left:auto}#category-filter{max-width:none;width:100%}}
+
+.heading-actions{justify-content:flex-end}.barcode-actions{margin:15px 0}.barcode-card{padding:18px;border:1px solid var(--line);border-radius:12px;margin:18px 0}.barcode-card p{font-size:13px;color:var(--muted)}
+#barcode-video{display:block;width:100%;max-height:300px;background:#172317;border-radius:10px;object-fit:cover}
+#barcode-message{font-size:12px;line-height:1.65}#barcode-dialog{max-width:570px}.barcode-card h3{font-size:18px}
+@media(max-width:620px){.heading-actions{justify-content:flex-start;margin-top:17px}.heading-actions>.button{margin-top:0}.barcode-actions .button{font-size:12px;padding:9px 11px}}

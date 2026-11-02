@@ -11,9 +11,13 @@
     "dev": "node scripts/dev.mjs",
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs",
-    "deploy": "node scripts/deploy.mjs"
+    "deploy": "node scripts/deploy.mjs",
+    "build:scanner": "node scripts/build-scanner.mjs"
   },
   "devDependencies": {
+    "@zxing/browser": "^0.2.1",
+    "@zxing/library": "^0.23.0",
+    "esbuild": "^0.28.2",
     "wrangler": "^4.156.0"
   }
 }

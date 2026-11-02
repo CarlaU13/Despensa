@@ -14,7 +14,7 @@ Aplicación privada para una despensa familiar, adaptable a celulares y computad
 - Lista compartida manual, sugerencias de reposición y recepción de compras que ingresa el lote y marca la lista en una sola transacción.
 - Historial y deshacer, con protección frente a cambios simultáneos.
 - Exportación JSON de los datos activos. La restauración completa se realiza con D1; todavía no hay importación JSON desde la interfaz.
-- No incluye escáner de códigos ni avisos por correo o push en esta versión.
+- Escaneo de códigos con cámara, lectura local de una foto o ingreso manual; consulta externa opcional y confirmación antes de crear el producto. No incluye avisos por correo o push.
 
 ## Ejecutar en tu computadora
 
@@ -108,3 +108,21 @@ La descarga desde la interfaz reúne todas las páginas en el navegador para pro
 La migración 0002 mantiene los datos y crea un contador de capacidad actualizado por transacciones, incluyendo recepción de compras, separación de lotes, eliminación y deshacer.
 
 Para artículos de limpieza: creá el producto con categoría **Limpieza** y registrá su compra en el lugar real (por ejemplo, **Alacena del lavadero**). Se pueden crear categorías propias o dejarlas vacías.
+
+## Códigos de barras
+
+En “Escanear código” se busca primero en el catálogo familiar. Si no está asociado, el servidor consulta la API pública Open Facts (alimentos, cosméticos, mascotas u otros productos) enviando solo el código y un identificador público de esta aplicación. No se envían fotos, inventario ni credenciales familiares.
+
+Los resultados se revisan antes de guardar. Nombre, marca y presentación pueden estar incompletos. La cantidad comprada, el lugar y las fechas siguen siendo datos de cada compra. La unidad de stock no se convierte automáticamente a partir del tamaño del envase.
+
+El código, marca, presentación y fuente son campos opcionales del producto. Los códigos GTIN se verifican y normalizan para impedir duplicados UPC/EAN. Los productos anteriores siguen funcionando sin código; la migración 0003 añade índices y tablas auxiliares sin reemplazar registros.
+
+La consulta necesita sesión y origen propio. Solo se permiten los dominios Open Facts y redirecciones controladas. Se limitan tiempo y tamaño de respuesta; una caché evita consultas repetidas y un cupo de 10 consultas nuevas por minuto ayuda a respetar los límites del proveedor. La carga manual sigue disponible ante ausencia, fallo o límite del servicio.
+
+La cámara se activa únicamente al tocar “Usar cámara”; se solicita permiso del navegador y se detiene al cerrar, ocultar la pestaña o detectar un código. Los fotogramas y las fotos se decodifican en el dispositivo. El lector ZXing se sirve desde este sitio, sin CDN. Se leen EAN-8, EAN-13, UPC-A e ITF/GTIN-14; otros formatos se pueden ingresar manualmente cuando correspondan a un GTIN válido.
+
+Para reconstruir el lector local: npm ci y npm run build:scanner. El archivo empaquetado y sus licencias están en public/vendor y se versionan para que un despliegue normal no dependa de instalar librerías en el servidor.
+
+Datos externos: [Open Food Facts](https://world.openfoodfacts.org), [Open Beauty Facts](https://world.openbeautyfacts.org), [Open Pet Food Facts](https://world.openpetfoodfacts.org), [Open Products Facts](https://world.openproductsfacts.org). Bases bajo ODbL y contenidos bajo DbCL: https://openfoodfacts.github.io/openfoodfacts-server/api/ . El proveedor solicita identificar la aplicación y registrar su uso mediante el formulario enlazado en su documentación.
+
+Lector: @zxing/browser (MIT) y @zxing/library (Apache-2.0); se incluyen los archivos de licencia correspondientes. No se utilizan imágenes del proveedor.

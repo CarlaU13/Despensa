@@ -8,4 +8,4 @@ No confirmes despliegues sin evidencia. La cuenta de alojamiento debe pertenecer
 
 Validación: Node.js 24 o posterior, `npm run check` y `npm test`. Las reglas puras en src/domain.mjs y public/domain.mjs deben ser idénticas.
 
-La interfaz no depende de frameworks ni recursos externos. Mantené consultas SQL parametrizadas, autorización en cada endpoint, protección de origen y transacciones para cambios de varias entidades.
+La interfaz no depende de frameworks. El lector ZXing se empaqueta con npm run build:scanner y se sirve desde public/vendor; no cargar código desde CDN. La consulta externa de códigos usa solo los dominios Open Facts permitidos, después de autenticar la sesión, sin enviar imágenes ni datos familiares. Mantené consultas SQL parametrizadas, autorización en cada endpoint, protección de origen y transacciones para cambios de varias entidades.

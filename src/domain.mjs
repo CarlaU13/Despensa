@@ -1,3 +1,19 @@
+export const BARCODE_SOURCES = {
+  openfoodfacts: {label:'Open Food Facts',host:'world.openfoodfacts.org',category:'Alimentos'},
+  openbeautyfacts: {label:'Open Beauty Facts',host:'world.openbeautyfacts.org',category:'Higiene personal'},
+  openpetfoodfacts: {label:'Open Pet Food Facts',host:'world.openpetfoodfacts.org',category:'Mascotas'},
+  openproductsfacts: {label:'Open Products Facts',host:'world.openproductsfacts.org',category:null}
+};
+export function normalizeBarcode(value) {
+  if(value==null||value==='')return null;
+  if(typeof value!=='string')throw new AppError(400,'Ingresá un código de barras válido.');
+  const digits=value.replace(/[\s-]/g,'');
+  if(/^0+$/.test(digits)||!/^[0-9]+$/.test(digits)||![8,12,13,14].includes(digits.length))throw new AppError(400,'Usá un código EAN/UPC de 8, 12, 13 o 14 dígitos.');
+  let sum=0,weight=3;
+  for(let i=digits.length-2;i>=0;i--){sum+=Number(digits[i])*weight;weight=weight===3?1:3;}
+  if(Number(digits.at(-1))!==(10-sum%10)%10)throw new AppError(400,'El código no pasa la verificación. Revisá los números o escanealo otra vez.');
+  return digits.padStart(14,'0');
+}
 export const MAX_ACTIVE_RECORDS = 50000;
 export const CATEGORY_SUGGESTIONS = ['Alimentos', 'Limpieza', 'Higiene personal', 'Mascotas', 'Otros'];
 export const UNITS = ['unidad', 'paquete', 'kg', 'g', 'l', 'ml', 'pote', 'botella', 'lata', 'frasco', 'porción'];
@@ -43,7 +59,9 @@ export function validate(kind, input) {
   if (kind === 'product') return {
     name: text(input.name, 'el nombre del producto', 140, true),
     category: text(input.category, 'categoría', 80), unit: unit(input.unit || 'unidad'),
-    minimum: number(input.minimum, 'Stock mínimo'), notes
+    minimum: number(input.minimum, 'Stock mínimo'),
+    barcode: normalizeBarcode(input.barcode), brand:text(input.brand,'marca',100), presentation:text(input.presentation,'presentación',100),
+    barcode_source: input.barcode&&Object.hasOwn(BARCODE_SOURCES,input.barcode_source||'')?input.barcode_source:null, notes
   };
   if (kind === 'lot') return {
     product_id: identifier(input.product_id), location_id: identifier(input.location_id, true),

@@ -125,4 +125,6 @@ Para reconstruir el lector local: npm ci y npm run build:scanner. El archivo emp
 
 Datos externos: [Open Food Facts](https://world.openfoodfacts.org), [Open Beauty Facts](https://world.openbeautyfacts.org), [Open Pet Food Facts](https://world.openpetfoodfacts.org), [Open Products Facts](https://world.openproductsfacts.org). Bases bajo ODbL y contenidos bajo DbCL: https://openfoodfacts.github.io/openfoodfacts-server/api/ . El proveedor solicita identificar la aplicación y registrar su uso mediante el formulario enlazado en su documentación.
 
-Lector: @zxing/browser (MIT) y @zxing/library (Apache-2.0); se incluyen los archivos de licencia correspondientes. No se utilizan imágenes del proveedor.
+Lector: @zxing/library (Apache-2.0); se incluye su archivo de licencia. No se utilizan imágenes del proveedor.
+
+La lectura en vivo usa primero BarcodeDetector cuando el navegador ofrece los formatos necesarios y mantiene ZXing local como alternativa. Se solicita cámara trasera en alta resolución y enfoque continuo solo cuando está disponible. La alternativa prueba ambas orientaciones, valida el código antes de detenerse y avisa si tarda en reconocerlo. Cerrar u ocultar la pestaña detiene cámara y bucle de lectura.

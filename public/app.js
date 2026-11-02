@@ -266,14 +266,14 @@ async function searchBarcode(){
 async function startCamera(){
  stopCamera();const epoch=scanEpoch;
  if(!navigator.mediaDevices?.getUserMedia)throw Error('Este navegador no permite usar la cámara. Escribí el código o usá una foto.');
- $('#barcode-camera-panel').hidden=false;$('#barcode-message').textContent='Apuntá la cámara al código de barras. Mantené el envase quieto y con buena luz.';
+ $('#barcode-camera-panel').hidden=false;$('#barcode-message').textContent='Mantené el código completo y horizontal, con las barras verticales y margen blanco a ambos lados. Alejá un poco el envase hasta que esté nítido.';
  try{
  const module=await scanner();
  if(epoch!==scanEpoch||!$('#barcode-dialog').open)return;
  const control=await module.startScanner($('#barcode-video'),value=>{
  if(epoch!==scanEpoch||!$('#barcode-dialog').open)return;
  $('#barcode-input').value=value;searchBarcode().catch(scanError);
- },()=>epoch===scanEpoch&&$('#barcode-dialog').open);
+ },()=>epoch===scanEpoch&&$('#barcode-dialog').open,message=>{if(epoch===scanEpoch&&$('#barcode-dialog').open)$('#barcode-message').textContent=message;});
  if(epoch!==scanEpoch||!$('#barcode-dialog').open)control.stop();else scanControls=control;
  }catch(error){
  stopCamera();
